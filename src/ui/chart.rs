@@ -69,8 +69,7 @@ impl<'a> Widget for RateChart<'a> {
             )
             .data(BarGroup::default().bars(&bars))
             .bar_width(bar_width)
-            // Hide the value, there must be a better way(?)
-            .value_style(Style::new().bg(Color::Green)) 
+            .value_style(Style::new().bg(Color::Green))
             .bar_gap(gap)
             .max(max_rate)
             .render(area, buf);
