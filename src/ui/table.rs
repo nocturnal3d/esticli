@@ -209,7 +209,7 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
                 let max_offset = total_rows.saturating_sub(available_height);
                 let offset = ideal_offset.min(max_offset);
 
-                *state = state.clone().with_offset(offset);
+                *state = (*state).with_offset(offset);
             }
         }
 
