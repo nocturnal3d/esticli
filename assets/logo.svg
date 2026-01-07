@@ -1,0 +1,38 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="esTeal" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#24BBB1"/>
+            <stop offset="100%" stop-color="#0F9D96"/>
+        </linearGradient>
+        <linearGradient id="esYellow" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#FEC514"/>
+            <stop offset="100%" stop-color="#F39C12"/>
+        </linearGradient>
+        <linearGradient id="esGreen" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#7ED321"/>
+            <stop offset="100%" stop-color="#5FB709"/>
+        </linearGradient>
+    </defs>
+
+    <!-- Background ES circle (5 segments like official logo) -->
+    <g transform="translate(128, 128)">
+        <!-- Outer ring segments -->
+        <circle r="100" fill="none" stroke="#E6E6E6" stroke-width="20"
+                stroke-dasharray="50 25.66" transform="rotate(-90)"/>
+        
+        <!-- Middle ring -->
+        <circle r="70" fill="none" stroke="url(#esTeal)" stroke-width="18"
+                stroke-dasharray="35 22" transform="rotate(-54)"/>
+        
+        <!-- Inner ring (highlighted as "top") -->
+        <circle r="42" fill="none" stroke="url(#esYellow)" stroke-width="20"
+                stroke-dasharray="21 15.39" transform="rotate(-18)"/>
+        
+        <!-- Center badge with arrow -->
+        <circle r="24" fill="url(#esGreen)"/>
+        
+        <!-- Centered upward arrow (white for contrast) -->
+        <path d="M 0 -12 L -8 -2 L -3 -2 L -3 8 L 3 8 L 3 -2 L 8 -2 Z" 
+              fill="white"/>
+    </g>
+</svg>

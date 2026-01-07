@@ -1,0 +1,73 @@
+<svg width="1200" height="240" viewBox="0 0 1200 240" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="esTeal" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#24BBB1"/>
+            <stop offset="100%" stop-color="#0F9D96"/>
+        </linearGradient>
+        <linearGradient id="esYellow" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#FEC514"/>
+            <stop offset="100%" stop-color="#F39C12"/>
+        </linearGradient>
+        <linearGradient id="esGreen" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#7ED321"/>
+            <stop offset="100%" stop-color="#5FB709"/>
+        </linearGradient>
+        <linearGradient id="bgGradient" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#0A0E27"/>
+            <stop offset="100%" stop-color="#1A1F3A"/>
+        </linearGradient>
+    </defs>
+
+    <!-- Background -->
+    <rect width="1200" height="240" fill="url(#bgGradient)"/>
+    
+    <!-- Subtle grid pattern -->
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#ffffff" stroke-width="0.5" opacity="0.05"/>
+    </pattern>
+    <rect width="1200" height="240" fill="url(#grid)"/>
+
+    <!-- Logo (centered vertically, positioned left) -->
+    <g transform="translate(180, 120) scale(0.7)">
+        <!-- Outer ring segments -->
+        <circle r="100" fill="none" stroke="#E6E6E6" stroke-width="20"
+                stroke-dasharray="50 25.66" transform="rotate(-90)" opacity="0.3"/>
+        
+        <!-- Middle ring -->
+        <circle r="70" fill="none" stroke="url(#esTeal)" stroke-width="18"
+                stroke-dasharray="35 22" transform="rotate(-54)"/>
+        
+        <!-- Inner ring (highlighted) -->
+        <circle r="42" fill="none" stroke="url(#esYellow)" stroke-width="20"
+                stroke-dasharray="21 15.39" transform="rotate(-18)"/>
+        
+        <!-- Center badge with arrow -->
+        <circle r="24" fill="url(#esGreen)"/>
+        <path d="M 0 -12 L -8 -2 L -3 -2 L -3 8 L 3 8 L 3 -2 L 8 -2 Z" 
+              fill="white"/>
+    </g>
+
+    <!-- CLI Prompt Icon |> (positioned between logo and title) -->
+    <g transform="translate(280, 120)">
+        <!-- Pipe | -->
+        <rect x="-2" y="-30" width="4" height="60" fill="url(#esYellow)" rx="2"/>
+        <!-- Arrow > -->
+        <path d="M 10 -25 L 35 0 L 10 25 L 10 15 L 22 0 L 10 -15 Z" 
+              fill="url(#esTeal)"/>
+    </g>
+
+    <!-- Title -->
+    <text x="360" y="105" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" 
+          font-size="64" font-weight="700" fill="#FFFFFF" letter-spacing="-1">
+        EstiCLI
+    </text>
+    
+    <!-- Subtitle -->
+    <text x="360" y="155" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" 
+          font-size="28" font-weight="400" fill="#24BBB1" letter-spacing="0.5">
+        Top for Elasticsearch
+    </text>
+
+    <!-- Accent line -->
+    <rect x="360" y="170" width="180" height="3" fill="url(#esYellow)" rx="1.5"/>
+</svg>

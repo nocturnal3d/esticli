@@ -1,0 +1,35 @@
+[package]
+name = "esticli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jose Malheiro <nocturnal3d@gmail.com>"]
+description = "A top-like TUI for real-time monitoring of Elasticsearch index ingestion rates"
+license = "MIT"
+repository = "https://github.com/nocturnal3d/esticli"
+homepage = "https://github.com/nocturnal3d/esticli"
+documentation = "https://github.com/nocturnal3d/esticli#readme"
+readme = "README.md"
+keywords = ["elasticsearch", "tui", "monitoring", "cli", "terminal"]
+categories = ["command-line-utilities", "development-tools::profiling"]
+rust-version = "1.70"
+
+[dependencies]
+ratatui = "0.30.0"
+crossterm = "0.29.0"
+tui-input = "0.15.0"
+human_format = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = [
+  "json",
+  "rustls-tls",
+  "gzip",
+], default-features = false }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+url = "2"
+chrono = "0.4"
+colorgrad = { version = "0.8.0", features = ["preset"] }
+tellaro-query-language = "0.2.7"
