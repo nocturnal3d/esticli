@@ -19,7 +19,7 @@ A `top`-like TUI for real-time monitoring of Elasticsearch index ingestion rates
 - **Cluster Overview** - Graph showing cluster-wide average ingestion history
 - **Cluster Health** - shows global cluster metrics (shards, tasks, health etc.)
 - **Smart Sorting** - Sort by name, document count, rate, size or health with visual gradient
-- **Regex Filtering** - Filter indices with full regex support and cursor navigation
+- **jq Filtering** - Filter indices using jq syntax with real-time validation
 - **Index Details** - Deep-dive popup with info on shards, ILM policy, templates and data streams
 - **Index Exclusion** - Temporarily exclude "noisy" indices from stats
 - **Flexible Auth** - Basic auth, API keys, and custom CA certificates
@@ -124,7 +124,7 @@ esticli --rate-samples 5
 | `Enter`     | Show index details                        |
 | `x`         | Exclude/include selected index from stats |
 | `X`         | Clear all exclusions                      |
-| `/`         | Enter filter mode (regex)                 |
+| `/`         | Enter filter mode (jq)                    |
 | `Space`     | Pause/resume refresh                      |
 | `?`         | Show help                                 |
 | `q` / `Esc` | Quit                                      |
@@ -160,6 +160,21 @@ esticli --rate-samples 5
 | `Backspace` / `Delete` | Delete characters |
 | `Ctrl+u`               | Clear filter      |
 | `Esc` / `Enter`        | Exit filter input |
+
+
+### Filter Syntax (jq)
+
+Filters use [jq](https://jqlang.github.io/jq/) syntax. Available fields: `.name`, `.doc_count`, `.rate_per_sec`, `.health`, `.size_bytes`
+
+| Filter                                | Description              |
+|---------------------------------------|--------------------------|
+| `select(.name == "my-index")`         | Exact name match         |
+| `select(.doc_count > 1000)`           | Docs greater than 1000   |
+| `select(.health != "green")`          | Non-green health status  |
+| `select(.rate_per_sec > 5)`           | High ingestion rate      |
+| `select(.name \| contains("test"))`   | Name contains "test"     |
+| `select(.name \| test(".*test$"))`    | Name matches regex              |
+| `select(.doc_count > 100 and .health == "green")` | Combined conditions |
 
 
 ## Index Details
@@ -255,7 +270,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [thiserror](https://github.com/dtolnay/thiserror) - Derived error traits
 - [url](https://github.com/servo/rust-url) - URL parsing and construction
 - [chrono](https://github.com/chronotope/chrono) - Date and time library
-- [regex](https://github.com/rust-lang/regex) - Regular expressions
+- [jaq](https://github.com/01mf02/jaq) - jq clone for JSON filtering
 
 ---
 

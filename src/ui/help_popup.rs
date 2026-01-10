@@ -78,7 +78,7 @@ impl<'a> Widget for HelpPopup<'a> {
             ]),
             Line::from(vec![
                 Span::styled("  /         ", Style::new().fg(Color::Green)),
-                Span::raw("Enter filter mode (TQL)"),
+                Span::raw("Enter filter mode (jq)"),
             ]),
             Line::from(vec![
                 Span::styled("  Space     ", Style::new().fg(Color::Green)),
@@ -165,11 +165,11 @@ impl<'a> Widget for HelpPopup<'a> {
                 Span::raw("Quit / Close popup"),
             ]),
             Line::from(""),
-            Line::from(Span::styled("TQL Query Language", theme::TITLE)),
+            Line::from(Span::styled("jq Filter Syntax", theme::TITLE)),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Fields:   ", Style::new().fg(Color::Yellow)),
-                Span::raw("name, doc_count, rate_per_sec, health, size_bytes"),
+                Span::raw(".name, .doc_count, .rate_per_sec, .health, .size_bytes"),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -177,27 +177,27 @@ impl<'a> Widget for HelpPopup<'a> {
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![
-                Span::styled("  name = 'idx-1'       ", Style::new().fg(Color::Cyan)),
-                Span::raw("Match specific name"),
+                Span::styled("  select(.name == \"idx-1\")         ", Style::new().fg(Color::Cyan)),
+                Span::raw("Exact name match"),
             ]),
             Line::from(vec![
-                Span::styled("  doc_count > 1000     ", Style::new().fg(Color::Cyan)),
+                Span::styled("  select(.doc_count > 1000)        ", Style::new().fg(Color::Cyan)),
                 Span::raw("Docs > 1000"),
             ]),
             Line::from(vec![
-                Span::styled("  health != 'green'    ", Style::new().fg(Color::Cyan)),
+                Span::styled("  select(.health != \"green\")       ", Style::new().fg(Color::Cyan)),
                 Span::raw("Problematic health"),
             ]),
             Line::from(vec![
-                Span::styled("  rate_per_sec > 5     ", Style::new().fg(Color::Cyan)),
+                Span::styled("  select(.rate_per_sec > 5)        ", Style::new().fg(Color::Cyan)),
                 Span::raw("High rate"),
             ]),
             Line::from(vec![
-                Span::styled("  name contains 'test' ", Style::new().fg(Color::Cyan)),
+                Span::styled("  select(.name | contains(\"test\")) ", Style::new().fg(Color::Cyan)),
                 Span::raw("Name contains 'test'"),
             ]),
             Line::from(""),
-            Line::from("  TQL supports logical operators like AND, OR, NOT."),
+            Line::from("  Combine with: and, or, not (e.g., select(.a > 1 and .b < 5))"),
         ];
 
         // Apply scroll offset

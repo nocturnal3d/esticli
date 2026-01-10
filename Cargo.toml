@@ -32,4 +32,6 @@ thiserror = "2"
 url = "2"
 chrono = "0.4"
 colorgrad = { version = "0.8.0", features = ["preset"] }
-tellaro-query-language = "0.2.7"
+jaq-core = "2"
+jaq-std = "2"
+jaq-json = { version = "1", features = ["serde_json"] }

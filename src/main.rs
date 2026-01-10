@@ -107,7 +107,7 @@ async fn run(mut terminal: DefaultTerminal, app: &mut App) -> Result<()> {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         // Poll for keyboard events with a short timeout
-        if event::poll(Duration::from_millis(10))? {
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if let Some(action) = map_key_to_action(app, key) {
@@ -120,7 +120,7 @@ async fn run(mut terminal: DefaultTerminal, app: &mut App) -> Result<()> {
                             }
                             _ => {
                                 app.filter.input.handle_event(&Event::Key(key));
-                                app.recompile_filter();
+                                app.filter.recompile();
                             }
                         }
                     }

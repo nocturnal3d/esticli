@@ -409,10 +409,6 @@ impl App {
         self.filter.clear();
     }
 
-    pub fn recompile_filter(&mut self) {
-        self.filter.recompile();
-    }
-
     pub fn filtered_indices(&self) -> Vec<&IndexRate> {
         self.indices
             .iter()
