@@ -177,23 +177,38 @@ impl<'a> Widget for HelpPopup<'a> {
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![
-                Span::styled("  select(.name == \"idx-1\")         ", Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    "  select(.name == \"idx-1\")         ",
+                    Style::new().fg(Color::Cyan),
+                ),
                 Span::raw("Exact name match"),
             ]),
             Line::from(vec![
-                Span::styled("  select(.doc_count > 1000)        ", Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    "  select(.doc_count > 1000)        ",
+                    Style::new().fg(Color::Cyan),
+                ),
                 Span::raw("Docs > 1000"),
             ]),
             Line::from(vec![
-                Span::styled("  select(.health != \"green\")       ", Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    "  select(.health != \"green\")       ",
+                    Style::new().fg(Color::Cyan),
+                ),
                 Span::raw("Problematic health"),
             ]),
             Line::from(vec![
-                Span::styled("  select(.rate_per_sec > 5)        ", Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    "  select(.rate_per_sec > 5)        ",
+                    Style::new().fg(Color::Cyan),
+                ),
                 Span::raw("High rate"),
             ]),
             Line::from(vec![
-                Span::styled("  select(.name | contains(\"test\")) ", Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    "  select(.name | contains(\"test\")) ",
+                    Style::new().fg(Color::Cyan),
+                ),
                 Span::raw("Name contains 'test'"),
             ]),
             Line::from(""),
