@@ -12,7 +12,7 @@ use crate::elasticsearch::{AuthConfig, EsClient};
 use crate::error::{EstiCliError, Result};
 use crate::models::{ClusterHealth, IndexRate};
 use crate::ui::types::Colormap;
-use crate::utils::{format_number, format_bytes};
+use crate::utils::{format_bytes, format_number};
 use tokio::sync::{mpsc, Mutex};
 
 use self::actions::Action;
