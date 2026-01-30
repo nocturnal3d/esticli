@@ -211,6 +211,20 @@ impl<'a> Widget for HelpPopup<'a> {
                 ),
                 Span::raw("Name contains 'test'"),
             ]),
+            Line::from(vec![
+                Span::styled(
+                    "  select(.name | test(\"idx-[0-9]+\")) ",
+                    Style::new().fg(Color::Cyan),
+                ),
+                Span::raw("Regex match on name"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "  select(.health | match(\"red\"))    ",
+                    Style::new().fg(Color::Cyan),
+                ),
+                Span::raw("Match health 'red'"),
+            ]),
             Line::from(""),
             Line::from("  Combine with: and, or, not (e.g., select(.a > 1 and .b < 5))"),
         ];
