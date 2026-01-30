@@ -43,6 +43,12 @@ impl<'a> Widget for Header<'a> {
                     format!("{} /s", self.app.total_cluster_rate_human()),
                     theme::RATE,
                 ),
+                Span::raw(" ("),
+                Span::styled(
+                    format!("{}/s", self.app.total_cluster_bytes_per_sec_human()),
+                    theme::RATE,
+                ),
+                Span::raw(")"),
                 Span::raw(" | "),
                 Span::styled(datetime, Style::new().fg(Color::White)),
             ])

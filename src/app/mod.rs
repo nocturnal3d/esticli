@@ -12,7 +12,7 @@ use crate::elasticsearch::{AuthConfig, EsClient};
 use crate::error::{EstiCliError, Result};
 use crate::models::{ClusterHealth, IndexRate};
 use crate::ui::types::Colormap;
-use crate::utils::format_number;
+use crate::utils::{format_number, format_bytes};
 use tokio::sync::{mpsc, Mutex};
 
 use self::actions::Action;
@@ -137,7 +137,9 @@ impl App {
     }
 
     // Returns the total indexing rate across all non-excluded indices.
-    pub fn total_cluster_rate(&self) -> f64 {
+    // Calculates both total cluster rate and bytes per second in a single pass.
+    // Returns (rate_per_sec, bytes_per_sec)
+    fn total_cluster_metrics(&self) -> (f64, f64) {
         self.indices
             .iter()
             .filter(|i| {
@@ -152,13 +154,36 @@ impl App {
                 // Apply regex filter from FilterState
                 self.filter.is_match(i)
             })
-            .map(|i| i.rate_per_sec)
-            .sum()
+            .fold((0.0, 0.0), |(rate_sum, bytes_sum), i| {
+                let rate = i.rate_per_sec;
+                let bytes_per_sec = if i.doc_count > 0 {
+                    let avg_doc_size = i.size_bytes as f64 / i.doc_count as f64;
+                    avg_doc_size * i.rate_per_sec
+                } else {
+                    0.0
+                };
+                (rate_sum + rate, bytes_sum + bytes_per_sec)
+            })
+    }
+
+    pub fn total_cluster_rate(&self) -> f64 {
+        self.total_cluster_metrics().0
     }
 
     // Returns a human-readable string of the total cluster indexing rate.
     pub fn total_cluster_rate_human(&self) -> String {
         format_number(self.total_cluster_rate())
+    }
+
+    // Returns the total cluster bytes per second across all indices.
+    pub fn total_cluster_bytes_per_sec(&self) -> f64 {
+        self.total_cluster_metrics().1
+    }
+
+    // Returns a human-readable string of the total cluster bytes per second.
+    pub fn total_cluster_bytes_per_sec_human(&self) -> String {
+        let bytes_per_sec = self.total_cluster_bytes_per_sec();
+        format_bytes(bytes_per_sec as u64)
     }
 
     // Starts a background fetch of index rates from Elasticsearch.
