@@ -28,6 +28,15 @@ pub type FetchResult = std::result::Result<(Vec<IndexRate>, ClusterHealth), Esti
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Aggregated metrics for cluster-wide indexing performance.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClusterMetrics {
+    /// Total documents indexed per second across all indices
+    pub rate_per_sec: f64,
+    /// Total bytes indexed per second across all indices
+    pub bytes_per_sec: f64,
+}
+
 /// Main application state and logic controller.
 ///
 /// This struct holds all the state necessary to render the TUI and handles
@@ -136,10 +145,11 @@ impl App {
         }
     }
 
-    // Returns the total indexing rate across all non-excluded indices.
-    // Calculates both total cluster rate and bytes per second in a single pass.
-    // Returns (rate_per_sec, bytes_per_sec)
-    fn total_cluster_metrics(&self) -> (f64, f64) {
+    /// Returns aggregated metrics for all non-excluded indices.
+    ///
+    /// This calculates both indexing rate and bytes per second in a single pass,
+    /// applying all active filters (excluded indices, system indices, regex filter).
+    fn total_cluster_metrics(&self) -> ClusterMetrics {
         self.indices
             .iter()
             .filter(|i| {
@@ -154,33 +164,34 @@ impl App {
                 // Apply regex filter from FilterState
                 self.filter.is_match(i)
             })
-            .fold((0.0, 0.0), |(rate_sum, bytes_sum), i| {
-                let rate = i.rate_per_sec;
-                let bytes_per_sec = if i.doc_count > 0 {
+            .fold(ClusterMetrics::default(), |mut acc, i| {
+                acc.rate_per_sec += i.rate_per_sec;
+
+                // Calculate bytes per second based on average document size
+                if i.doc_count > 0 {
                     let avg_doc_size = i.size_bytes as f64 / i.doc_count as f64;
-                    avg_doc_size * i.rate_per_sec
-                } else {
-                    0.0
-                };
-                (rate_sum + rate, bytes_sum + bytes_per_sec)
+                    acc.bytes_per_sec += avg_doc_size * i.rate_per_sec;
+                }
+
+                acc
             })
     }
 
     pub fn total_cluster_rate(&self) -> f64 {
-        self.total_cluster_metrics().0
+        self.total_cluster_metrics().rate_per_sec
     }
 
-    // Returns a human-readable string of the total cluster indexing rate.
+    /// Returns a human-readable string of the total cluster indexing rate.
     pub fn total_cluster_rate_human(&self) -> String {
         format_number(self.total_cluster_rate())
     }
 
-    // Returns the total cluster bytes per second across all indices.
+    /// Returns the total cluster bytes per second across all indices.
     pub fn total_cluster_bytes_per_sec(&self) -> f64 {
-        self.total_cluster_metrics().1
+        self.total_cluster_metrics().bytes_per_sec
     }
 
-    // Returns a human-readable string of the total cluster bytes per second.
+    /// Returns a human-readable string of the total cluster bytes per second.
     pub fn total_cluster_bytes_per_sec_human(&self) -> String {
         let bytes_per_sec = self.total_cluster_bytes_per_sec();
         format_bytes(bytes_per_sec as u64)
