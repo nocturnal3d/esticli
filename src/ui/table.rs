@@ -178,12 +178,15 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
                 if !before.is_empty() {
                     title_spans.push(Span::styled(before.to_string(), filter_style));
                 }
-                title_spans.push(Span::styled(
-                    "▏",
-                    Style::new()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::RAPID_BLINK),
-                ));
+                // Blink driven by our own clock (see FilterState::cursor_visible)
+                // rather than the terminal's SGR blink attribute, which most
+                // modern terminal emulators ignore. A plain space in the "off"
+                // phase keeps the column width stable so text doesn't jitter.
+                if self.app.filter.cursor_visible() {
+                    title_spans.push(Span::styled("▏", Style::new().fg(Color::White)));
+                } else {
+                    title_spans.push(Span::raw(" "));
+                }
                 if !after.is_empty() {
                     title_spans.push(Span::styled(after.to_string(), filter_style));
                 }

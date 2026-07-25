@@ -12,7 +12,6 @@ use anyhow::Result;
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{layout::Rect, DefaultTerminal};
-use tui_input::backend::crossterm::EventHandler;
 
 use app::actions::Action;
 use app::App;
@@ -126,10 +125,7 @@ async fn run(mut terminal: DefaultTerminal, app: &mut App) -> Result<()> {
                             KeyCode::Esc | KeyCode::Enter => {
                                 app.handle_action(Action::ExitFilterMode)
                             }
-                            _ => {
-                                app.filter.input.handle_event(&Event::Key(key));
-                                app.filter.recompile();
-                            }
+                            _ => app.filter.handle_key(&Event::Key(key)),
                         }
                     }
                 }

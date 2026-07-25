@@ -27,9 +27,17 @@ impl<'a> Widget for Header<'a> {
         let now = Local::now();
         let datetime = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
+        // Sourced from Cargo.toml at compile time so it can never drift
+        // from the version actually running.
+        let version = Span::styled(
+            concat!("v", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(Color::DarkGray),
+        );
+
         let title = if let Some(ref error) = self.app.error {
             Line::from(vec![
                 Span::styled(" EstiCLI ", theme::TITLE),
+                version,
                 Span::raw(" | "),
                 Span::styled(format!("Error: {}", error), theme::ERROR),
                 Span::raw(" | "),
@@ -38,6 +46,7 @@ impl<'a> Widget for Header<'a> {
         } else {
             Line::from(vec![
                 Span::styled(" EstiCLI ", theme::TITLE),
+                version,
                 Span::raw(" | "),
                 Span::styled(&self.app.es_url, theme::URL),
                 Span::raw(" | Cluster Rate: "),

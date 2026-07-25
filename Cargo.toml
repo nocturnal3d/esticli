@@ -1,6 +1,6 @@
 [package]
 name = "esticli"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Jose Malheiro <nocturnal3d@gmail.com>"]
 description = "A top-like TUI for real-time monitoring of Elasticsearch index ingestion rates"
