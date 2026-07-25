@@ -47,10 +47,7 @@ impl<'a> Widget for Header<'a> {
                 ),
                 Span::raw(" ("),
                 Span::styled(
-                    format!(
-                        "{}/s",
-                        format_bytes(self.metrics.bytes_per_sec as u64)
-                    ),
+                    format!("{}/s", format_bytes(self.metrics.bytes_per_sec as u64)),
                     theme::RATE,
                 ),
                 Span::raw(")"),

@@ -445,10 +445,7 @@ impl App {
     }
 
     pub fn filtered_indices(&self) -> Vec<&IndexRate> {
-        self.indices
-            .iter()
-            .filter(|i| self.is_visible(i))
-            .collect()
+        self.indices.iter().filter(|i| self.is_visible(i)).collect()
     }
 
     // Details delegation

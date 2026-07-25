@@ -36,9 +36,7 @@ fn popup_area(area: Rect) -> Rect {
 /// terminal area, accounting for the border and title row. Used to size
 /// Page Up/Down scrolling to what's actually on screen.
 pub fn visible_rows(terminal_area: Rect) -> usize {
-    popup_area(terminal_area)
-        .height
-        .saturating_sub(4) as usize
+    popup_area(terminal_area).height.saturating_sub(4) as usize
 }
 
 impl<'a> Widget for DetailsPopup<'a> {
