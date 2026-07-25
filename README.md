@@ -124,7 +124,8 @@ esticli --rate-samples 5
 | `Enter`     | Show index details                        |
 | `x`         | Exclude/include selected index from stats |
 | `X`         | Clear all exclusions                      |
-| `/`         | Enter filter mode (jq)                    |
+| `/`         | Enter filter mode (regex on index name)   |
+| `//`        | Enter filter mode as jq (see below)       |
 | `Space`     | Pause/resume refresh                      |
 | `?`         | Show help                                 |
 | `q` / `Esc` | Quit                                      |
@@ -152,29 +153,39 @@ esticli --rate-samples 5
 
 ### Filter Mode
 
-| Key                    | Action            |
-|------------------------|-------------------|
-| `←` / `→`              | Move cursor       |
-| `Ctrl+←` / `Ctrl+→`    | Move by word      |
-| `Home` / `End`         | Jump to start/end |
-| `Backspace` / `Delete` | Delete characters |
-| `Ctrl+u`               | Clear filter      |
-| `Esc` / `Enter`        | Exit filter input |
+| Key                    | Action                                          |
+|------------------------|--------------------------------------------------|
+| `←` / `→`              | Move cursor                                     |
+| `Ctrl+←` / `Ctrl+→`    | Move by word                                    |
+| `Home` / `End`         | Jump to start/end                               |
+| `Backspace` / `Delete` | Delete characters                               |
+| `Ctrl+u`               | Clear filter                                    |
+| `Esc` / `Enter`        | Exit filter input                               |
+| `/` (while box empty)  | Toggle between regex and jq syntax              |
 
 
-### Filter Syntax (jq)
+### Filter Syntax
 
-Filters use [jq](https://jqlang.github.io/jq/) syntax. Available fields: `.name`, `.doc_count`, `.rate_per_sec`, `.health`, `.size_bytes`
+By default (`/`), the filter box is a plain **regex matched against the index name** — just type a pattern, no jq knowledge needed:
 
-| Filter                                | Description              |
-|---------------------------------------|--------------------------|
-| `select(.name == "my-index")`         | Exact name match         |
-| `select(.doc_count > 1000)`           | Docs greater than 1000   |
-| `select(.health != "green")`          | Non-green health status  |
-| `select(.rate_per_sec > 5)`           | High ingestion rate      |
-| `select(.name \| contains("test"))`   | Name contains "test"     |
-| `select(.name \| test(".*test$"))`    | Name matches regex              |
-| `select(.doc_count > 100 and .health == "green")` | Combined conditions |
+| Filter        | Description             |
+|---------------|--------------------------|
+| `my-index`    | Name contains "my-index" |
+| `^\.`         | Name starts with "."     |
+| `idx-[0-9]+`  | Name matches pattern     |
+
+Pressing `/` again while the box is still empty ("//") switches to **jq mode**, where you type a boolean expression and it's automatically wrapped in `select(...)` for you. Available fields: `.name`, `.doc_count`, `.rate_per_sec`, `.health`, `.size_bytes`.
+
+| Filter (typed, without `select(...)`) | Description              |
+|----------------------------------------|--------------------------|
+| `.name == "my-index"`                 | Exact name match         |
+| `.doc_count > 1000`                   | Docs greater than 1000   |
+| `.health != "green"`                  | Non-green health status  |
+| `.rate_per_sec > 5`                   | High ingestion rate      |
+| `.name \| contains("test")`           | Name contains "test"     |
+| `.doc_count > 100 and .health == "green"` | Combined conditions |
+
+See [jq](https://jqlang.github.io/jq/)'s syntax reference for the full expression language.
 
 
 ## Index Details

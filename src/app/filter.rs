@@ -7,9 +7,33 @@ use tui_input::Input;
 /// Compiled filter that can be reused across multiple matches
 type CompiledFilter = Arc<jaq_core::Filter<Native<Val>>>;
 
+/// Which syntax the filter input box is currently interpreted as.
+///
+/// `/` opens the filter in `Regex` mode, where the raw input is a plain
+/// regex matched against `.name` — no jq knowledge required. Pressing `/`
+/// again while the input is still empty ("//") switches to `Jq` mode,
+/// where the raw input is a jq boolean expression that gets wrapped in
+/// `select(...)` automatically, so the user never types `select` themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterMode {
+    #[default]
+    Regex,
+    Jq,
+}
+
+impl FilterMode {
+    fn toggled(self) -> Self {
+        match self {
+            FilterMode::Regex => FilterMode::Jq,
+            FilterMode::Jq => FilterMode::Regex,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct FilterState {
     pub active: bool,
+    pub mode: FilterMode,
     pub input: Input,
     pub error: Option<String>,
     /// Cached compiled filter - only recompiled when input changes
@@ -27,9 +51,18 @@ impl FilterState {
 
     pub fn clear(&mut self) {
         self.input.reset();
+        self.mode = FilterMode::default();
         self.error = None;
         self.compiled = None;
         self.active = false;
+    }
+
+    /// Switches between regex and jq syntax. Only meaningful while the
+    /// input is empty (a `/` typed after any text is just a character), so
+    /// callers gate this on `input.value().is_empty()` before invoking it.
+    pub fn toggle_mode(&mut self) {
+        self.mode = self.mode.toggled();
+        self.recompile();
     }
 
     pub fn recompile(&mut self) {
@@ -37,16 +70,48 @@ impl FilterState {
         if text.is_empty() {
             self.error = None;
             self.compiled = None;
-        } else {
-            match compile_filter(text) {
-                Ok(filter) => {
-                    self.error = None;
-                    self.compiled = Some(Arc::new(filter));
+            return;
+        }
+
+        let program = match self.mode {
+            // Match the raw regex against the index name only. Quoting via
+            // serde_json gives us correct jq/JSON string escaping for free.
+            FilterMode::Regex => {
+                let quoted = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
+                format!("select(.name | test({}))", quoted)
+            }
+            // The user types the boolean expression only; `select(...)` is
+            // implicit so they never need to know jq's select syntax.
+            FilterMode::Jq => format!("select({})", text),
+        };
+
+        match compile_filter(&program) {
+            Ok(filter) => {
+                let filter = Arc::new(filter);
+                // jq compiles a syntactically valid program even when it
+                // will always fail at runtime — e.g. an invalid regex passed
+                // to test() is just a string literal as far as the compiler
+                // is concerned. Probe it against a dummy index now so
+                // errors like that surface immediately instead of silently
+                // matching nothing (or everything) once real data arrives.
+                let probe = serde_json::json!({
+                    "name": "", "doc_count": 0, "rate_per_sec": 0.0,
+                    "size_bytes": 0, "health": "",
+                });
+                match evaluate(&filter, Val::from(probe)) {
+                    Ok(_) => {
+                        self.error = None;
+                        self.compiled = Some(filter);
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
+                        self.compiled = None;
+                    }
                 }
-                Err(e) => {
-                    self.error = Some(e);
-                    self.compiled = None;
-                }
+            }
+            Err(e) => {
+                self.error = Some(e);
+                self.compiled = None;
             }
         }
     }
@@ -58,17 +123,22 @@ impl FilterState {
         };
 
         match serde_json::to_value(item) {
-            Ok(json) => {
-                // Run the pre-compiled filter
-                let inputs = RcIter::new(core::iter::empty());
-                let val = Val::from(json);
-                let mut results = filter.run((Ctx::new([], &inputs), val));
-
-                // For select() filters, a match produces output; no match produces nothing
-                results.next().is_some()
-            }
+            Ok(json) => evaluate(filter, Val::from(json)).unwrap_or(false),
             Err(_) => true,
         }
+    }
+}
+
+/// Runs a compiled `select(...)` filter against a value: `Ok(true)` if it
+/// matched, `Ok(false)` if it didn't, `Err` if the filter itself raised a
+/// runtime error (e.g. an invalid regex).
+fn evaluate(filter: &CompiledFilter, val: Val) -> Result<bool, String> {
+    let inputs = RcIter::new(core::iter::empty());
+    let mut results = filter.run((Ctx::new([], &inputs), val));
+    match results.next() {
+        Some(Ok(_)) => Ok(true),
+        Some(Err(e)) => Err(e.to_string()),
+        None => Ok(false),
     }
 }
 
@@ -118,8 +188,9 @@ mod tests {
         assert!(filter.error.is_none());
         assert!(filter.is_match(&serde_json::json!({"name": "any-index"})));
 
-        // Valid jq filter - select by exact name
-        filter.input = "select(.name == \"my-test-index\")".into();
+        // Default mode is a plain regex against .name — no jq needed
+        assert_eq!(filter.mode, FilterMode::Regex);
+        filter.input = "my-test-index".into();
         filter.recompile();
         if let Some(ref e) = filter.error {
             eprintln!("Error compiling filter: {}", e);
@@ -128,20 +199,42 @@ mod tests {
         assert!(filter.is_match(&serde_json::json!({"name": "my-test-index"})));
         assert!(!filter.is_match(&serde_json::json!({"name": "other-index"})));
 
-        // Invalid jq syntax
-        filter.input = "invalid query syntax {{".into();
+        // Invalid regex syntax
+        filter.input = "unbalanced[bracket".into();
         filter.recompile();
         assert!(filter.error.is_some());
     }
 
     #[test]
+    fn test_filter_toggle_mode() {
+        let mut filter = FilterState::default();
+        assert_eq!(filter.mode, FilterMode::Regex);
+
+        // "//" (second '/' while input is empty) switches to jq mode
+        filter.toggle_mode();
+        assert_eq!(filter.mode, FilterMode::Jq);
+
+        // A bare boolean expression gets wrapped in select(...) automatically
+        filter.input = ".doc_count > 1000".into();
+        filter.recompile();
+        assert!(filter.error.is_none());
+        assert!(filter.is_match(&serde_json::json!({"doc_count": 2000})));
+        assert!(!filter.is_match(&serde_json::json!({"doc_count": 500})));
+
+        // Toggling back switches to regex mode again
+        filter.toggle_mode();
+        assert_eq!(filter.mode, FilterMode::Regex);
+    }
+
+    #[test]
     fn test_filter_clear() {
         let mut filter = FilterState {
-            input: "select(.name == \"test\")".into(),
+            input: "test".into(),
             ..Default::default()
         };
         filter.recompile();
         filter.enter();
+        filter.toggle_mode();
 
         assert!(filter.active);
         assert!(!filter.input.value().is_empty());
@@ -149,13 +242,15 @@ mod tests {
         filter.clear();
         assert!(!filter.active);
         assert!(filter.input.value().is_empty());
+        assert_eq!(filter.mode, FilterMode::Regex);
     }
 
     #[test]
     fn test_filter_numeric_comparison() {
         let mut filter_state = FilterState {
             active: false,
-            input: "select(.doc_count > 1000)".into(),
+            mode: FilterMode::Jq,
+            input: ".doc_count > 1000".into(),
             error: None,
             compiled: None,
         };
@@ -169,7 +264,8 @@ mod tests {
     fn test_filter_string_contains() {
         let mut filter_state = FilterState {
             active: false,
-            input: "select(.name | contains(\"test\"))".into(),
+            mode: FilterMode::Jq,
+            input: ".name | contains(\"test\")".into(),
             error: None,
             compiled: None,
         };
@@ -180,10 +276,24 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_regex_matches_name_substring() {
+        // Regex mode matches anywhere in the name, like a search box
+        let mut filter_state = FilterState {
+            input: "idx-[0-9]+".into(),
+            ..Default::default()
+        };
+        filter_state.recompile();
+
+        assert!(filter_state.is_match(&serde_json::json!({"name": "my-idx-42"})));
+        assert!(!filter_state.is_match(&serde_json::json!({"name": "my-index"})));
+    }
+
+    #[test]
     fn test_filter_performance() {
         // Verify that multiple matches reuse the compiled filter
         let mut filter_state = FilterState {
-            input: "select(.doc_count > 100)".into(),
+            mode: FilterMode::Jq,
+            input: ".doc_count > 100".into(),
             ..Default::default()
         };
         filter_state.recompile();

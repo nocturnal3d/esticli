@@ -39,6 +39,7 @@ pub enum Action {
     EnterFilterMode,
     ExitFilterMode,
     ClearFilter,
+    ToggleFilterMode,
 
     // Details Popup
     CloseDetails,

@@ -178,6 +178,11 @@ fn map_key_to_action(
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ClearFilter)
             }
+            // A second '/' while the box is still empty ("//") toggles
+            // regex/jq syntax instead of being inserted as text.
+            KeyCode::Char('/') if app.filter.input.value().is_empty() => {
+                Some(Action::ToggleFilterMode)
+            }
             // Other keys handled by input component in run loop
             _ => None,
         };

@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::theme;
+use crate::app::filter::FilterMode;
 use crate::app::App;
 use crate::models::IndexRate;
 use crate::ui::types::{SortColumn, SortOrder};
@@ -151,7 +152,17 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
         let filter_value = self.app.filter.input.value();
         if self.app.filter.active || !filter_value.is_empty() {
             title_spans.push(Span::raw(" | "));
-            title_spans.push(Span::styled("Filter: ", Style::new().fg(Color::Yellow)));
+
+            // Make jq mode visually distinct so it's obvious the input is
+            // no longer a plain name regex.
+            let (label, label_color) = match self.app.filter.mode {
+                FilterMode::Regex => ("Filter: ", Color::Yellow),
+                FilterMode::Jq => ("jq: ", Color::Magenta),
+            };
+            title_spans.push(Span::styled(
+                label,
+                Style::new().fg(label_color).add_modifier(Modifier::BOLD),
+            ));
 
             let filter_style = if self.app.filter.error.is_some() {
                 theme::ERROR

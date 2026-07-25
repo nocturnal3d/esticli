@@ -78,7 +78,11 @@ impl<'a> Widget for HelpPopup<'a> {
             ]),
             Line::from(vec![
                 Span::styled("  /         ", Style::new().fg(Color::Green)),
-                Span::raw("Enter filter mode (jq)"),
+                Span::raw("Enter filter mode (regex on name)"),
+            ]),
+            Line::from(vec![
+                Span::styled("  //        ", Style::new().fg(Color::Green)),
+                Span::raw("Switch filter to jq mode"),
             ]),
             Line::from(vec![
                 Span::styled("  Space     ", Style::new().fg(Color::Green)),
@@ -116,6 +120,10 @@ impl<'a> Widget for HelpPopup<'a> {
             Line::from(vec![
                 Span::styled("  Esc/Enter ", Style::new().fg(Color::Green)),
                 Span::raw("Exit filter input"),
+            ]),
+            Line::from(vec![
+                Span::styled("  /         ", Style::new().fg(Color::Green)),
+                Span::raw("(when box is empty) toggle regex/jq mode"),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -165,68 +173,75 @@ impl<'a> Widget for HelpPopup<'a> {
                 Span::raw("Quit / Close popup"),
             ]),
             Line::from(""),
-            Line::from(Span::styled("jq Filter Syntax", theme::TITLE)),
+            Line::from(Span::styled("Filter Syntax", theme::TITLE)),
             Line::from(""),
+            Line::from(vec![Span::styled(
+                "  Regex mode (default, via /)",
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("  Type a plain regex — it's matched against the index name only."),
+            Line::from(vec![
+                Span::styled("  idx-1                ", Style::new().fg(Color::Cyan)),
+                Span::raw("Name contains 'idx-1'"),
+            ]),
+            Line::from(vec![
+                Span::styled("  ^\\.                   ", Style::new().fg(Color::Cyan)),
+                Span::raw("Name starts with '.'"),
+            ]),
+            Line::from(vec![
+                Span::styled("  idx-[0-9]+           ", Style::new().fg(Color::Cyan)),
+                Span::raw("Name matches pattern"),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "  jq mode (via //)",
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("  Type a jq boolean expression — it's wrapped in select(...) for you."),
             Line::from(vec![
                 Span::styled("  Fields:   ", Style::new().fg(Color::Yellow)),
                 Span::raw(".name, .doc_count, .rate_per_sec, .health, .size_bytes"),
             ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Examples",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
             Line::from(vec![
                 Span::styled(
-                    "  select(.name == \"idx-1\")         ",
+                    "  .name == \"idx-1\"         ",
                     Style::new().fg(Color::Cyan),
                 ),
                 Span::raw("Exact name match"),
             ]),
             Line::from(vec![
-                Span::styled(
-                    "  select(.doc_count > 1000)        ",
-                    Style::new().fg(Color::Cyan),
-                ),
+                Span::styled("  .doc_count > 1000        ", Style::new().fg(Color::Cyan)),
                 Span::raw("Docs > 1000"),
             ]),
             Line::from(vec![
                 Span::styled(
-                    "  select(.health != \"green\")       ",
+                    "  .health != \"green\"       ",
                     Style::new().fg(Color::Cyan),
                 ),
                 Span::raw("Problematic health"),
             ]),
             Line::from(vec![
-                Span::styled(
-                    "  select(.rate_per_sec > 5)        ",
-                    Style::new().fg(Color::Cyan),
-                ),
+                Span::styled("  .rate_per_sec > 5        ", Style::new().fg(Color::Cyan)),
                 Span::raw("High rate"),
             ]),
             Line::from(vec![
                 Span::styled(
-                    "  select(.name | contains(\"test\")) ",
+                    "  .name | contains(\"test\") ",
                     Style::new().fg(Color::Cyan),
                 ),
                 Span::raw("Name contains 'test'"),
             ]),
             Line::from(vec![
                 Span::styled(
-                    "  select(.name | test(\"idx-[0-9]+\")) ",
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::raw("Regex match on name"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  select(.health | match(\"red\"))    ",
+                    "  .health | match(\"red\")    ",
                     Style::new().fg(Color::Cyan),
                 ),
                 Span::raw("Match health 'red'"),
             ]),
             Line::from(""),
-            Line::from("  Combine with: and, or, not (e.g., select(.a > 1 and .b < 5))"),
+            Line::from(
+                "  Combine with: and, or, not (e.g., .doc_count > 1 and .health == \"red\")",
+            ),
         ];
 
         // Apply scroll offset

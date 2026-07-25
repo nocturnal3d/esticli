@@ -440,6 +440,10 @@ impl App {
         self.filter.exit();
     }
 
+    pub fn toggle_filter_mode(&mut self) {
+        self.filter.toggle_mode();
+    }
+
     pub fn clear_filter(&mut self) {
         self.filter.clear();
     }
@@ -575,6 +579,7 @@ impl App {
             Action::EnterFilterMode => self.enter_filter_mode(),
             Action::ExitFilterMode => self.exit_filter_mode(),
             Action::ClearFilter => self.clear_filter(),
+            Action::ToggleFilterMode => self.toggle_filter_mode(),
             Action::CloseDetails => self.close_details_popup(),
             Action::DetailsScrollUp => self.details_scroll_up(),
             Action::DetailsScrollDown => self.details_scroll_down(),
