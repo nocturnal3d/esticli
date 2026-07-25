@@ -1,6 +1,6 @@
 [package]
 name = "esticli"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["Jose Malheiro <nocturnal3d@gmail.com>"]
 description = "A top-like TUI for real-time monitoring of Elasticsearch index ingestion rates"
@@ -19,9 +19,10 @@ crossterm = "0.29.0"
 tui-input = "0.15.0"
 human_format = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = [
+reqwest = { version = "0.13", features = [
   "json",
-  "rustls-tls",
+  "rustls",
+  "webpki-roots",
   "gzip",
 ], default-features = false }
 clap = { version = "4", features = ["derive"] }

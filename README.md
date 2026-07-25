@@ -205,6 +205,7 @@ Press `Enter` on any index to view detailed information:
 
 - Elasticsearch 7.x or 8.x
 - Rust 1.70+ (for building from source)
+- A C compiler and CMake (for building from source — needed by `aws-lc-rs`, the TLS crypto backend; already present on GitHub Actions' `ubuntu-latest` and most dev machines)
 - Terminal with Unicode support
 
 ## Building from Source
