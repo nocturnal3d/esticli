@@ -8,6 +8,9 @@
 *.swo
 *~
 
+# Claude Code local settings (per-user tool permissions)
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db
