@@ -254,6 +254,11 @@ impl App {
                             self.rate_history.pop_front();
                         }
                         self.rate_history.push_back(total_rate);
+
+                        // Keep an open details popup live: refresh it in
+                        // step with the main list instead of leaving it
+                        // frozen at whatever it showed when it was opened.
+                        self.refresh_open_details();
                     }
                     Err(e) => {
                         self.error = Some(e.to_string());
@@ -475,6 +480,31 @@ impl App {
 
     pub fn close_details_popup(&mut self) {
         self.details.close();
+    }
+
+    /// Re-fetches the currently displayed index's details using its latest
+    /// stats, if the popup is open. Looks the index up by name (not by
+    /// table position, which can shift as data reorders) against the
+    /// index list; if the index has since disappeared, the popup simply
+    /// keeps showing its last known data instead of erroring out.
+    fn refresh_open_details(&mut self) {
+        if !self.details.show_popup {
+            return;
+        }
+        let Some(name) = self.details.index_name.clone() else {
+            return;
+        };
+        let Some(index) = self.indices.iter().find(|i| i.name == name) else {
+            return;
+        };
+
+        self.details.fetch(
+            self.es_client.clone(),
+            name,
+            index.doc_count,
+            index.rate_per_sec,
+            index.size_bytes,
+        );
     }
 
     pub fn poll_details_result(&mut self) {

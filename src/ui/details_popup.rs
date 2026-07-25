@@ -399,13 +399,18 @@ impl<'a> Widget for DetailsPopup<'a> {
         let max_scroll = lines.len().saturating_sub(visible_height);
         let scroll = self.app.details.scroll.min(max_scroll);
 
-        let title = Line::from(vec![
-            Span::raw(" Index Details "),
-            Span::styled(
-                "[Esc/Enter] Close  [j/k] Scroll ",
-                Style::new().fg(Color::DarkGray),
-            ),
-        ]);
+        let mut title_spans = vec![Span::raw(" Index Details ")];
+        // Once data is showing, background refreshes update it in place
+        // without a loading flash — this is the only visible cue that a
+        // refresh is happening.
+        if self.app.details.refreshing && self.app.details.data.is_some() {
+            title_spans.push(Span::styled("⟳ refreshing ", Style::new().fg(Color::Cyan)));
+        }
+        title_spans.push(Span::styled(
+            "[Esc/Enter] Close  [j/k] Scroll ",
+            Style::new().fg(Color::DarkGray),
+        ));
+        let title = Line::from(title_spans);
 
         Paragraph::new(lines)
             .block(
