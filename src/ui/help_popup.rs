@@ -22,7 +22,7 @@ impl<'a> HelpPopup<'a> {
 impl<'a> Widget for HelpPopup<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate popup area
-        let popup_width = (area.width as f32 * 0.6).min(70.0) as u16;
+        let popup_width = (area.width as f32 * 0.6).min(90.0) as u16;
         let popup_height = (area.height as f32 * 0.8).min(40.0) as u16;
         let popup_x = (area.width - popup_width) / 2;
         let popup_y = (area.height - popup_height) / 2;
@@ -185,7 +185,7 @@ impl<'a> Widget for HelpPopup<'a> {
                 Span::raw("Name contains 'idx-1'"),
             ]),
             Line::from(vec![
-                Span::styled("  ^\\.                   ", Style::new().fg(Color::Cyan)),
+                Span::styled("  ^\\.                  ", Style::new().fg(Color::Cyan)),
                 Span::raw("Name starts with '.'"),
             ]),
             Line::from(vec![
@@ -233,7 +233,7 @@ impl<'a> Widget for HelpPopup<'a> {
             ]),
             Line::from(vec![
                 Span::styled(
-                    "  .health | match(\"red\")    ",
+                    "  .health | match(\"red\")   ",
                     Style::new().fg(Color::Cyan),
                 ),
                 Span::raw("Match health 'red'"),

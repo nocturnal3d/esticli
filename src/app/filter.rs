@@ -1,8 +1,10 @@
 use jaq_core::{load, Compiler, Ctx, Native, RcIter};
 use jaq_json::Val;
-use serde::Serialize;
+use regex_lite::Regex;
 use std::sync::Arc;
 use tui_input::Input;
+
+use crate::models::IndexRate;
 
 /// Compiled filter that can be reused across multiple matches
 type CompiledFilter = Arc<jaq_core::Filter<Native<Val>>>;
@@ -30,14 +32,29 @@ impl FilterMode {
     }
 }
 
+/// A compiled, ready-to-run filter.
+///
+/// Regex mode deliberately never touches jq or JSON: it matches `.name`
+/// directly with a pre-compiled `Regex`. This matters at scale — jq's
+/// `test()` builtin recompiles its regex argument from scratch on every
+/// single call (see jaq-std's `re()`), so routing plain name search through
+/// `select(.name | test(...))` would mean recompiling the same regex once
+/// per index on every redraw. Against a cluster with thousands of indices,
+/// redrawn ~20x/second, that's tens of thousands of regex compilations a
+/// second for a filter that never changes between keystrokes.
+enum Compiled {
+    Regex(Regex),
+    Jq(CompiledFilter),
+}
+
 #[derive(Default)]
 pub struct FilterState {
     pub active: bool,
     pub mode: FilterMode,
     pub input: Input,
     pub error: Option<String>,
-    /// Cached compiled filter - only recompiled when input changes
-    compiled: Option<CompiledFilter>,
+    /// Cached compiled filter - only recompiled when input or mode changes
+    compiled: Option<Compiled>,
 }
 
 impl FilterState {
@@ -73,35 +90,45 @@ impl FilterState {
             return;
         }
 
-        let program = match self.mode {
-            // Match the raw regex against the index name only. Quoting via
-            // serde_json gives us correct jq/JSON string escaping for free.
-            FilterMode::Regex => {
-                let quoted = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
-                format!("select(.name | test({}))", quoted)
-            }
+        match self.mode {
+            // Compiled once here and reused for every index — see the
+            // `Compiled` doc comment for why this must not go through jq.
+            FilterMode::Regex => match Regex::new(text) {
+                Ok(re) => {
+                    self.error = None;
+                    self.compiled = Some(Compiled::Regex(re));
+                }
+                Err(e) => {
+                    self.error = Some(e.to_string());
+                    self.compiled = None;
+                }
+            },
             // The user types the boolean expression only; `select(...)` is
             // implicit so they never need to know jq's select syntax.
-            FilterMode::Jq => format!("select({})", text),
-        };
-
-        match compile_filter(&program) {
-            Ok(filter) => {
-                let filter = Arc::new(filter);
-                // jq compiles a syntactically valid program even when it
-                // will always fail at runtime — e.g. an invalid regex passed
-                // to test() is just a string literal as far as the compiler
-                // is concerned. Probe it against a dummy index now so
-                // errors like that surface immediately instead of silently
-                // matching nothing (or everything) once real data arrives.
-                let probe = serde_json::json!({
-                    "name": "", "doc_count": 0, "rate_per_sec": 0.0,
-                    "size_bytes": 0, "health": "",
-                });
-                match evaluate(&filter, Val::from(probe)) {
-                    Ok(_) => {
-                        self.error = None;
-                        self.compiled = Some(filter);
+            FilterMode::Jq => {
+                let program = format!("select({})", text);
+                match compile_filter(&program) {
+                    Ok(filter) => {
+                        let filter = Arc::new(filter);
+                        // jq compiles a syntactically valid program even when
+                        // it will always fail at runtime — e.g. a type error
+                        // in the expression. Probe it against a dummy index
+                        // now so errors surface immediately instead of only
+                        // once real data arrives.
+                        let probe = serde_json::json!({
+                            "name": "", "doc_count": 0, "rate_per_sec": 0.0,
+                            "size_bytes": 0, "health": "",
+                        });
+                        match evaluate(&filter, Val::from(probe)) {
+                            Ok(_) => {
+                                self.error = None;
+                                self.compiled = Some(Compiled::Jq(filter));
+                            }
+                            Err(e) => {
+                                self.error = Some(e);
+                                self.compiled = None;
+                            }
+                        }
                     }
                     Err(e) => {
                         self.error = Some(e);
@@ -109,22 +136,18 @@ impl FilterState {
                     }
                 }
             }
-            Err(e) => {
-                self.error = Some(e);
-                self.compiled = None;
-            }
         }
     }
 
-    pub fn is_match<T: Serialize>(&self, item: &T) -> bool {
-        // No filter or error means match everything
-        let Some(filter) = &self.compiled else {
-            return true;
-        };
-
-        match serde_json::to_value(item) {
-            Ok(json) => evaluate(filter, Val::from(json)).unwrap_or(false),
-            Err(_) => true,
+    pub fn is_match(&self, index: &IndexRate) -> bool {
+        match &self.compiled {
+            // No filter or error means match everything
+            None => true,
+            Some(Compiled::Regex(re)) => re.is_match(&index.name),
+            Some(Compiled::Jq(filter)) => match serde_json::to_value(index) {
+                Ok(json) => evaluate(filter, Val::from(json)).unwrap_or(false),
+                Err(_) => true,
+            },
         }
     }
 }
@@ -179,6 +202,20 @@ fn compile_filter(filter_str: &str) -> Result<jaq_core::Filter<Native<Val>>, Str
 mod tests {
     use super::*;
 
+    fn mock_index(name: &str, doc_count: u64, rate_per_sec: f64) -> IndexRate {
+        IndexRate {
+            name: name.to_string(),
+            doc_count,
+            rate_per_sec,
+            size_bytes: 0,
+            health: "green".to_string(),
+        }
+    }
+
+    fn named(name: &str) -> IndexRate {
+        mock_index(name, 0, 0.0)
+    }
+
     #[test]
     fn test_filter_compilation() {
         let mut filter = FilterState::default();
@@ -186,7 +223,7 @@ mod tests {
         // Empty filter matches everything
         filter.recompile();
         assert!(filter.error.is_none());
-        assert!(filter.is_match(&serde_json::json!({"name": "any-index"})));
+        assert!(filter.is_match(&named("any-index")));
 
         // Default mode is a plain regex against .name — no jq needed
         assert_eq!(filter.mode, FilterMode::Regex);
@@ -196,8 +233,8 @@ mod tests {
             eprintln!("Error compiling filter: {}", e);
         }
         assert!(filter.error.is_none());
-        assert!(filter.is_match(&serde_json::json!({"name": "my-test-index"})));
-        assert!(!filter.is_match(&serde_json::json!({"name": "other-index"})));
+        assert!(filter.is_match(&named("my-test-index")));
+        assert!(!filter.is_match(&named("other-index")));
 
         // Invalid regex syntax
         filter.input = "unbalanced[bracket".into();
@@ -218,8 +255,8 @@ mod tests {
         filter.input = ".doc_count > 1000".into();
         filter.recompile();
         assert!(filter.error.is_none());
-        assert!(filter.is_match(&serde_json::json!({"doc_count": 2000})));
-        assert!(!filter.is_match(&serde_json::json!({"doc_count": 500})));
+        assert!(filter.is_match(&mock_index("idx", 2000, 0.0)));
+        assert!(!filter.is_match(&mock_index("idx", 500, 0.0)));
 
         // Toggling back switches to regex mode again
         filter.toggle_mode();
@@ -256,8 +293,8 @@ mod tests {
         };
         filter_state.recompile();
 
-        assert!(filter_state.is_match(&serde_json::json!({"doc_count": 2000})));
-        assert!(!filter_state.is_match(&serde_json::json!({"doc_count": 500})));
+        assert!(filter_state.is_match(&mock_index("idx", 2000, 0.0)));
+        assert!(!filter_state.is_match(&mock_index("idx", 500, 0.0)));
     }
 
     #[test]
@@ -271,8 +308,8 @@ mod tests {
         };
         filter_state.recompile();
 
-        assert!(filter_state.is_match(&serde_json::json!({"name": "my-test-index"})));
-        assert!(!filter_state.is_match(&serde_json::json!({"name": "production-index"})));
+        assert!(filter_state.is_match(&named("my-test-index")));
+        assert!(!filter_state.is_match(&named("production-index")));
     }
 
     #[test]
@@ -284,8 +321,26 @@ mod tests {
         };
         filter_state.recompile();
 
-        assert!(filter_state.is_match(&serde_json::json!({"name": "my-idx-42"})));
-        assert!(!filter_state.is_match(&serde_json::json!({"name": "my-index"})));
+        assert!(filter_state.is_match(&named("my-idx-42")));
+        assert!(!filter_state.is_match(&named("my-index")));
+    }
+
+    #[test]
+    fn test_filter_regex_compiled_once_not_per_match() {
+        // Regression guard for the perf bug where regex mode routed through
+        // jq's test(), which recompiles its regex argument on every call.
+        // Compiling here and reusing across many matches should stay fast
+        // even though this doesn't directly measure jq's internals.
+        let mut filter_state = FilterState {
+            input: "idx-[0-9]+".into(),
+            ..Default::default()
+        };
+        filter_state.recompile();
+
+        for i in 0..10_000 {
+            let name = format!("idx-{i}");
+            assert!(filter_state.is_match(&mock_index(&name, 0, 0.0)));
+        }
     }
 
     #[test]
@@ -300,7 +355,7 @@ mod tests {
 
         // This should be fast since filter is pre-compiled
         for i in 0..1000 {
-            let _ = filter_state.is_match(&serde_json::json!({"doc_count": i}));
+            let _ = filter_state.is_match(&mock_index("idx", i, 0.0));
         }
     }
 }

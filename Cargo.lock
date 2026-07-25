@@ -568,6 +568,7 @@ dependencies = [
  "jaq-json",
  "jaq-std",
  "ratatui",
+ "regex-lite",
  "reqwest",
  "serde",
  "serde_json",
