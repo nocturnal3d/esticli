@@ -7,7 +7,7 @@
 # EstiCLI
 **(/ˈɛs.tɪ.kliː/ - like "broccoli"  🥦 but for Elasticsearch)**
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Release](https://img.shields.io/github/v/release/nocturnal3d/esticli?label=release)](https://github.com/nocturnal3d/esticli/releases/latest) [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 A `top`-like TUI for real-time monitoring of Elasticsearch index ingestion rates.
 
@@ -257,7 +257,7 @@ src/
 
 ## Contributing and Changelog
 
-[Changelog](CHANGELOG.md)
+[Changelog](CHANGELOG.md) · [Releases](https://github.com/nocturnal3d/esticli/releases)
 
 Contributions are welcome! Please check out our [Contributing Guidelines](CONTRIBUTING.md) for details on how to get started, development setup, and coding standards.
 
