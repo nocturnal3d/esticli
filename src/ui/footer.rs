@@ -11,11 +11,17 @@ use crate::app::App;
 
 pub struct Footer<'a> {
     app: &'a App,
+    filtered_count: usize,
+    total_count: usize,
 }
 
 impl<'a> Footer<'a> {
-    pub fn new(app: &'a App) -> Self {
-        Self { app }
+    pub fn new(app: &'a App, filtered_count: usize, total_count: usize) -> Self {
+        Self {
+            app,
+            filtered_count,
+            total_count,
+        }
     }
 }
 
@@ -96,11 +102,7 @@ impl<'a> Widget for Footer<'a> {
             // Index count
             spans.push(Span::raw("  |  "));
             spans.push(Span::styled(
-                format!(
-                    "{}/{}",
-                    self.app.filtered_indices().len(),
-                    self.app.indices.len()
-                ),
+                format!("{}/{}", self.filtered_count, self.total_count),
                 Style::new().fg(Color::White),
             ));
         }

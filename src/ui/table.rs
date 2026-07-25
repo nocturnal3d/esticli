@@ -8,15 +8,20 @@ use ratatui::{
 
 use super::theme;
 use crate::app::App;
+use crate::models::IndexRate;
 use crate::ui::types::{SortColumn, SortOrder};
 
 pub struct IndicesTable<'a> {
     app: &'a App,
+    filtered_indices: &'a [&'a IndexRate],
 }
 
 impl<'a> IndicesTable<'a> {
-    pub fn new(app: &'a App) -> Self {
-        Self { app }
+    pub fn new(app: &'a App, filtered_indices: &'a [&'a IndexRate]) -> Self {
+        Self {
+            app,
+            filtered_indices,
+        }
     }
 }
 
@@ -24,8 +29,7 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
     type State = TableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // Get filtered indices once
-        let filtered_indices = self.app.filtered_indices();
+        let filtered_indices = self.filtered_indices;
         let filtered_count = filtered_indices.len();
         let total_count = self.app.indices.len();
 

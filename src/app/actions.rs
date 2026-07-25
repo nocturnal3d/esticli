@@ -6,8 +6,8 @@ pub enum Action {
     // Navigation
     SelectUp,
     SelectDown,
-    SelectPageUp,
-    SelectPageDown,
+    SelectPageUp(usize),
+    SelectPageDown(usize),
     SelectFirst,
     SelectLast,
 
@@ -44,6 +44,6 @@ pub enum Action {
     CloseDetails,
     DetailsScrollUp,
     DetailsScrollDown,
-    DetailsScrollPageUp,
-    DetailsScrollPageDown,
+    DetailsScrollPageUp(usize),
+    DetailsScrollPageDown(usize),
 }

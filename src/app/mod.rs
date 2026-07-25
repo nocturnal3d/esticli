@@ -12,7 +12,6 @@ use crate::elasticsearch::{AuthConfig, EsClient};
 use crate::error::{EstiCliError, Result};
 use crate::models::{ClusterHealth, IndexRate};
 use crate::ui::types::Colormap;
-use crate::utils::{format_bytes, format_number};
 use tokio::sync::{mpsc, Mutex};
 
 use self::actions::Action;
@@ -35,6 +34,15 @@ pub struct ClusterMetrics {
     pub rate_per_sec: f64,
     /// Total bytes indexed per second across all indices
     pub bytes_per_sec: f64,
+}
+
+/// Result of a single pass over `indices` applying all active visibility
+/// filters (exclusions, system indices, jq filter): the surviving indices
+/// plus their aggregated metrics, computed together so callers never need
+/// to filter the same data twice.
+pub struct VisibleSummary<'a> {
+    pub indices: Vec<&'a IndexRate>,
+    pub metrics: ClusterMetrics,
 }
 
 /// Main application state and logic controller.
@@ -145,56 +153,47 @@ impl App {
         }
     }
 
-    /// Returns aggregated metrics for all non-excluded indices.
-    ///
-    /// This calculates both indexing rate and bytes per second in a single pass,
-    /// applying all active filters (excluded indices, system indices, regex filter).
-    fn total_cluster_metrics(&self) -> ClusterMetrics {
-        self.indices
-            .iter()
-            .filter(|i| {
-                // Filter excluded indices
-                if self.excluded_indices.contains(&i.name) {
-                    return false;
-                }
-                // Filter system indices if not showing them
-                if !self.show_system_indices && i.name.starts_with('.') {
-                    return false;
-                }
-                // Apply regex filter from FilterState
-                self.filter.is_match(i)
-            })
-            .fold(ClusterMetrics::default(), |mut acc, i| {
-                acc.rate_per_sec += i.rate_per_sec;
+    /// Returns whether an index survives all active visibility filters
+    /// (excluded indices, system indices, jq filter). This is the single
+    /// source of truth for "is this index shown" — `visible_summary` and
+    /// `filtered_indices` both delegate to it so the checks can't drift.
+    fn is_visible(&self, index: &IndexRate) -> bool {
+        if self.excluded_indices.contains(&index.name) {
+            return false;
+        }
+        if !self.show_system_indices && index.name.starts_with('.') {
+            return false;
+        }
+        self.filter.is_match(index)
+    }
 
-                // Calculate bytes per second based on average document size
-                if i.doc_count > 0 {
-                    let avg_doc_size = i.size_bytes as f64 / i.doc_count as f64;
-                    acc.bytes_per_sec += avg_doc_size * i.rate_per_sec;
-                }
+    /// Computes the visible indices and their aggregated cluster metrics in
+    /// a single pass. Callers that need both (e.g. the UI on every draw)
+    /// should call this once rather than combining `filtered_indices()` and
+    /// `total_cluster_rate()`, which would filter the same data twice.
+    pub fn visible_summary(&self) -> VisibleSummary<'_> {
+        let mut indices = Vec::with_capacity(self.indices.len());
+        let mut metrics = ClusterMetrics::default();
 
-                acc
-            })
+        for index in &self.indices {
+            if !self.is_visible(index) {
+                continue;
+            }
+
+            metrics.rate_per_sec += index.rate_per_sec;
+            if index.doc_count > 0 {
+                let avg_doc_size = index.size_bytes as f64 / index.doc_count as f64;
+                metrics.bytes_per_sec += avg_doc_size * index.rate_per_sec;
+            }
+
+            indices.push(index);
+        }
+
+        VisibleSummary { indices, metrics }
     }
 
     pub fn total_cluster_rate(&self) -> f64 {
-        self.total_cluster_metrics().rate_per_sec
-    }
-
-    /// Returns a human-readable string of the total cluster indexing rate.
-    pub fn total_cluster_rate_human(&self) -> String {
-        format_number(self.total_cluster_rate())
-    }
-
-    /// Returns the total cluster bytes per second across all indices.
-    pub fn total_cluster_bytes_per_sec(&self) -> f64 {
-        self.total_cluster_metrics().bytes_per_sec
-    }
-
-    /// Returns a human-readable string of the total cluster bytes per second.
-    pub fn total_cluster_bytes_per_sec_human(&self) -> String {
-        let bytes_per_sec = self.total_cluster_bytes_per_sec();
-        format_bytes(bytes_per_sec as u64)
+        self.visible_summary().metrics.rate_per_sec
     }
 
     // Starts a background fetch of index rates from Elasticsearch.
@@ -448,18 +447,7 @@ impl App {
     pub fn filtered_indices(&self) -> Vec<&IndexRate> {
         self.indices
             .iter()
-            .filter(|i| {
-                // Filter excluded indices
-                if self.excluded_indices.contains(&i.name) {
-                    return false;
-                }
-                // Filter system indices if not showing them
-                if !self.show_system_indices && i.name.starts_with('.') {
-                    return false;
-                }
-                // Apply regex filter from FilterState
-                self.filter.is_match(i)
-            })
+            .filter(|i| self.is_visible(i))
             .collect()
     }
 
@@ -565,8 +553,8 @@ impl App {
             Action::Quit => self.quit(),
             Action::SelectUp => self.select_up(),
             Action::SelectDown => self.select_down(),
-            Action::SelectPageUp => self.select_page_up(20),
-            Action::SelectPageDown => self.select_page_down(20),
+            Action::SelectPageUp(page_size) => self.select_page_up(page_size),
+            Action::SelectPageDown(page_size) => self.select_page_down(page_size),
             Action::SelectFirst => self.select_first(),
             Action::SelectLast => self.select_last(),
             Action::ToggleHelp => self.toggle_help_popup(),
@@ -593,8 +581,8 @@ impl App {
             Action::CloseDetails => self.close_details_popup(),
             Action::DetailsScrollUp => self.details_scroll_up(),
             Action::DetailsScrollDown => self.details_scroll_down(),
-            Action::DetailsScrollPageUp => self.details_scroll_page_up(10),
-            Action::DetailsScrollPageDown => self.details_scroll_page_down(10),
+            Action::DetailsScrollPageUp(page_size) => self.details_scroll_page_up(page_size),
+            Action::DetailsScrollPageDown(page_size) => self.details_scroll_page_down(page_size),
         }
     }
 }

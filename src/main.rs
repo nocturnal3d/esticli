@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::DefaultTerminal;
+use ratatui::{layout::Rect, DefaultTerminal};
 use tui_input::backend::crossterm::EventHandler;
 
 use app::actions::Action;
@@ -106,11 +106,19 @@ async fn run(mut terminal: DefaultTerminal, app: &mut App) -> Result<()> {
 
         terminal.draw(|frame| ui::draw(frame, app))?;
 
+        // Page sizes derived from the actual rendered areas, so Page Up/Down
+        // scrolls by what's really on screen instead of a magic constant.
+        let terminal_area = Rect::new(0, 0, terminal.size()?.width, terminal.size()?.height);
+        let table_page_size = ui::table_page_size(terminal_area, app);
+        let details_page_size = ui::details_popup::visible_rows(terminal_area).max(1);
+
         // Poll for keyboard events with a short timeout
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if let Some(action) = map_key_to_action(app, key) {
+                    if let Some(action) =
+                        map_key_to_action(app, key, table_page_size, details_page_size)
+                    {
                         app.handle_action(action);
                     } else if app.filter.active {
                         // Filter mode special handling for text input
@@ -137,7 +145,12 @@ async fn run(mut terminal: DefaultTerminal, app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn map_key_to_action(app: &App, key: event::KeyEvent) -> Option<Action> {
+fn map_key_to_action(
+    app: &App,
+    key: event::KeyEvent,
+    table_page_size: usize,
+    details_page_size: usize,
+) -> Option<Action> {
     if app.show_help_popup {
         return match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Enter => {
@@ -154,8 +167,8 @@ fn map_key_to_action(app: &App, key: event::KeyEvent) -> Option<Action> {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => Some(Action::CloseDetails),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::DetailsScrollUp),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::DetailsScrollDown),
-            KeyCode::PageUp => Some(Action::DetailsScrollPageUp),
-            KeyCode::PageDown => Some(Action::DetailsScrollPageDown),
+            KeyCode::PageUp => Some(Action::DetailsScrollPageUp(details_page_size)),
+            KeyCode::PageDown => Some(Action::DetailsScrollPageDown(details_page_size)),
             _ => None,
         };
     }
@@ -192,13 +205,13 @@ fn map_key_to_action(app: &App, key: event::KeyEvent) -> Option<Action> {
         KeyCode::Up | KeyCode::Char('k') => Some(Action::SelectUp),
         KeyCode::Down | KeyCode::Char('j') => Some(Action::SelectDown),
         KeyCode::PageUp | KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::SelectPageUp)
+            Some(Action::SelectPageUp(table_page_size))
         }
-        KeyCode::PageUp => Some(Action::SelectPageUp),
+        KeyCode::PageUp => Some(Action::SelectPageUp(table_page_size)),
         KeyCode::PageDown | KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::SelectPageDown)
+            Some(Action::SelectPageDown(table_page_size))
         }
-        KeyCode::PageDown => Some(Action::SelectPageDown),
+        KeyCode::PageDown => Some(Action::SelectPageDown(table_page_size)),
         KeyCode::Home | KeyCode::Char('g') => Some(Action::SelectFirst),
         KeyCode::End | KeyCode::Char('G') => Some(Action::SelectLast),
         _ => None,

@@ -136,8 +136,10 @@ mod tests {
 
     #[test]
     fn test_filter_clear() {
-        let mut filter = FilterState::default();
-        filter.input = "select(.name == \"test\")".into();
+        let mut filter = FilterState {
+            input: "select(.name == \"test\")".into(),
+            ..Default::default()
+        };
         filter.recompile();
         filter.enter();
 
@@ -180,8 +182,10 @@ mod tests {
     #[test]
     fn test_filter_performance() {
         // Verify that multiple matches reuse the compiled filter
-        let mut filter_state = FilterState::default();
-        filter_state.input = "select(.doc_count > 100)".into();
+        let mut filter_state = FilterState {
+            input: "select(.doc_count > 100)".into(),
+            ..Default::default()
+        };
         filter_state.recompile();
 
         // This should be fast since filter is pre-compiled

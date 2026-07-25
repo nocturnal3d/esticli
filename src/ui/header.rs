@@ -8,15 +8,17 @@ use ratatui::{
 };
 
 use super::theme;
-use crate::app::App;
+use crate::app::{App, ClusterMetrics};
+use crate::utils::{format_bytes, format_number};
 
 pub struct Header<'a> {
     app: &'a App,
+    metrics: ClusterMetrics,
 }
 
 impl<'a> Header<'a> {
-    pub fn new(app: &'a App) -> Self {
-        Self { app }
+    pub fn new(app: &'a App, metrics: ClusterMetrics) -> Self {
+        Self { app, metrics }
     }
 }
 
@@ -40,12 +42,15 @@ impl<'a> Widget for Header<'a> {
                 Span::styled(&self.app.es_url, theme::URL),
                 Span::raw(" | Cluster Rate: "),
                 Span::styled(
-                    format!("{} /s", self.app.total_cluster_rate_human()),
+                    format!("{} /s", format_number(self.metrics.rate_per_sec)),
                     theme::RATE,
                 ),
                 Span::raw(" ("),
                 Span::styled(
-                    format!("{}/s", self.app.total_cluster_bytes_per_sec_human()),
+                    format!(
+                        "{}/s",
+                        format_bytes(self.metrics.bytes_per_sec as u64)
+                    ),
                     theme::RATE,
                 ),
                 Span::raw(")"),

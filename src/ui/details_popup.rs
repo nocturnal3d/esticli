@@ -20,15 +20,30 @@ impl<'a> DetailsPopup<'a> {
     }
 }
 
+/// Popup area (80% width, 80% height, centered) for the given terminal area.
+/// Shared by the widget's own render and by keyboard page-scroll sizing so
+/// the two can't disagree on how big the popup actually is.
+fn popup_area(area: Rect) -> Rect {
+    let popup_width = (area.width as f32 * 0.8) as u16;
+    let popup_height = (area.height as f32 * 0.8) as u16;
+    let popup_x = (area.width - popup_width) / 2;
+    let popup_y = (area.height - popup_height) / 2;
+
+    Rect::new(popup_x, popup_y, popup_width, popup_height)
+}
+
+/// Number of content rows visible in the details popup for the given
+/// terminal area, accounting for the border and title row. Used to size
+/// Page Up/Down scrolling to what's actually on screen.
+pub fn visible_rows(terminal_area: Rect) -> usize {
+    popup_area(terminal_area)
+        .height
+        .saturating_sub(4) as usize
+}
+
 impl<'a> Widget for DetailsPopup<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate popup area (80% width, 80% height, centered)
-        let popup_width = (area.width as f32 * 0.8) as u16;
-        let popup_height = (area.height as f32 * 0.8) as u16;
-        let popup_x = (area.width - popup_width) / 2;
-        let popup_y = (area.height - popup_height) / 2;
-
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+        let popup_area = popup_area(area);
 
         // Clear the popup area
         Clear.render(popup_area, buf);
@@ -382,7 +397,7 @@ impl<'a> Widget for DetailsPopup<'a> {
         }
 
         // Apply scroll offset
-        let visible_height = popup_height.saturating_sub(4) as usize; // Account for border and title
+        let visible_height = popup_area.height.saturating_sub(4) as usize; // Account for border and title
         let max_scroll = lines.len().saturating_sub(visible_height);
         let scroll = self.app.details.scroll.min(max_scroll);
 
