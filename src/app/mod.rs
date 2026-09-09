@@ -19,7 +19,10 @@ use self::details::DetailsState;
 use self::filter::FilterState;
 use self::sort::{NodeSortState, SortState};
 
-const MAX_HISTORY_POINTS: usize = 60;
+// One history sample is drawn per terminal column, so this needs to comfortably
+// exceed the width of a wide terminal or the graph can never fill its panel.
+// At the default 5s refresh, 300 samples is ~25 minutes of history.
+const MAX_HISTORY_POINTS: usize = 300;
 const MIN_REFRESH_SECS: u64 = 1;
 const MAX_REFRESH_SECS: u64 = 60;
 
@@ -381,10 +384,6 @@ impl App {
         if current_secs < MAX_REFRESH_SECS {
             self.refresh_interval = Duration::from_secs(current_secs + 1);
         }
-    }
-
-    pub fn rate_history_vec(&self) -> Vec<u64> {
-        self.rate_history.iter().copied().collect()
     }
 
     // Checks if the application should trigger a new background fetch.

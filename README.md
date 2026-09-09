@@ -16,7 +16,7 @@ A `top`-like TUI for real-time monitoring of Elasticsearch index ingestion rates
 ## Features
 
 - **Real-time Monitoring** - Live average indexing rates (docs/sec) for all indices
-- **Cluster Overview** - Graph showing cluster-wide average ingestion history
+- **Cluster Overview** - Smooth filled area graph of cluster-wide ingestion history, shaded through the active colormap
 - **Cluster Health** - shows global cluster metrics (shards, tasks, health etc.)
 - **Nodes View** - per-node heap, CPU, failed indexing ops, bulk sizes and circuit-breaker trips
 - **Smart Sorting** - Sort by name, document count, rate, size or health with visual gradient
