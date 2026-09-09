@@ -13,16 +13,20 @@ use crate::ui::types::{gradient_position, NodeSortColumn, SortOrder};
 
 pub struct NodesTable<'a> {
     app: &'a App,
-    nodes: &'a [&'a NodeStats],
-    total_count: usize,
+    /// Every node that survives the filter — used for the row count and the
+    /// gradient's scale, which must reflect the whole list, not the window.
+    visible: &'a [&'a NodeStats],
+    /// First row to draw; only the on-screen window is turned into `Row`s,
+    /// matching the indices table.
+    offset: usize,
 }
 
 impl<'a> NodesTable<'a> {
-    pub fn new(app: &'a App, nodes: &'a [&'a NodeStats], total_count: usize) -> Self {
+    pub fn new(app: &'a App, visible: &'a [&'a NodeStats], offset: usize) -> Self {
         Self {
             app,
-            nodes,
-            total_count,
+            visible,
+            offset,
         }
     }
 
@@ -78,14 +82,19 @@ impl<'a> StatefulWidget for NodesTable<'a> {
         // Gradient is normalized against the largest value in the sorted
         // column, exactly as the indices table does, so the hottest node is
         // always at the top of the colormap and the rest read relative to it.
+        let end = self
+            .offset
+            .saturating_add(super::visible_row_capacity(area))
+            .min(self.visible.len());
+        let window = self.visible.get(self.offset..end).unwrap_or(&[]);
+
         let max_value: f64 = self
-            .nodes
+            .visible
             .iter()
             .filter_map(|node| self.sort_value(node))
             .fold(0.0_f64, f64::max);
 
-        let rows: Vec<Row> = self
-            .nodes
+        let rows: Vec<Row> = window
             .iter()
             .map(|node| {
                 let style = match self.sort_value(node) {
@@ -138,7 +147,7 @@ impl<'a> StatefulWidget for NodesTable<'a> {
         title_spans.push(Span::raw(" "));
         let status = super::panel_title::status(
             self.app,
-            format!("({}/{})", self.nodes.len(), self.total_count),
+            format!("({}/{})", self.visible.len(), self.app.nodes.len()),
         );
 
         let border_style = if self.app.paused {

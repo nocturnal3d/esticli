@@ -13,14 +13,21 @@ use crate::ui::types::{gradient_position, SortColumn, SortOrder};
 
 pub struct IndicesTable<'a> {
     app: &'a App,
-    filtered_indices: &'a [&'a IndexRate],
+    /// Every index that survives the filter — used for the row count in the
+    /// title and for the gradient's scale, both of which must reflect the
+    /// whole list rather than the slice on screen.
+    visible: &'a [&'a IndexRate],
+    /// First row to draw. Only `visible[offset..offset + capacity]` is turned
+    /// into `Row`s; building the rest is what made large clusters unusable.
+    offset: usize,
 }
 
 impl<'a> IndicesTable<'a> {
-    pub fn new(app: &'a App, filtered_indices: &'a [&'a IndexRate]) -> Self {
+    pub fn new(app: &'a App, visible: &'a [&'a IndexRate], offset: usize) -> Self {
         Self {
             app,
-            filtered_indices,
+            visible,
+            offset,
         }
     }
 }
@@ -29,9 +36,18 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
     type State = TableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let filtered_indices = self.filtered_indices;
-        let filtered_count = filtered_indices.len();
+        let filtered_count = self.visible.len();
         let total_count = self.app.indices.len();
+
+        // Only the rows that will actually be on screen get built. Each row
+        // clones two strings and formats three numbers, so doing this for
+        // every index on a 50k-index cluster cost ~93ms per frame — and the
+        // loop redraws unconditionally, ~20x a second.
+        let end = self
+            .offset
+            .saturating_add(super::visible_row_capacity(area))
+            .min(self.visible.len());
+        let window = self.visible.get(self.offset..end).unwrap_or(&[]);
 
         let header_cells = [
             ("Index Name", SortColumn::Name),
@@ -61,8 +77,11 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
             .style(Style::new().bg(Color::DarkGray))
             .height(1);
 
-        // Find max value for gradient calculation based on current sort column
-        let max_value: f64 = filtered_indices
+        // Scale the gradient across the whole filtered list, not just the
+        // window: normalising against the visible slice would make a row's
+        // color change as you scroll past it.
+        let max_value: f64 = self
+            .visible
             .iter()
             .map(|i| match self.app.sort.column {
                 SortColumn::Name | SortColumn::Health => 0.0,
@@ -72,7 +91,7 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
             })
             .fold(0.0_f64, f64::max);
 
-        let rows: Vec<Row> = filtered_indices
+        let rows: Vec<Row> = window
             .iter()
             .map(|index| {
                 let style = match self.app.sort.column {

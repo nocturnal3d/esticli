@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-09
+
+### Changed
+- The indices and nodes tables now build only the rows that are actually on screen. Both previously constructed a `Row` for every visible entry — each cloning two strings and formatting three numbers — and handed the lot to ratatui, which then drew about forty of them. On a 50,000-index cluster that cost ~93ms per frame, and since the event loop redraws unconditionally roughly twenty times a second, navigation was permanently queued behind it. Rendering the same table now takes ~0.26ms, and arrow keys are immediate.
+  - Scroll position is computed by `ui::scroll_offset()` rather than by ratatui, which can no longer do it now that it only receives the visible window. Behaviour is unchanged: the list holds still until the cursor would leave the viewport.
+- Filter patterns containing no regex metacharacters are matched with a substring search instead of the regex engine. Typed filters are overwhelmingly plain substrings, and on a 50,000-index cluster filtering dropped from ~15.6ms per frame to ~0.22ms. Patterns that do use metacharacters still compile as regexes, so anchors and character classes behave exactly as before.
+
+### Added
+- A performance harness for the indices panel at cluster scale, run with `cargo test --release perf -- --ignored --nocapture`. It is `#[ignore]`d, so it never runs in CI.
+
 ## [0.4.0] - 2026-09-09
 
 ### Changed

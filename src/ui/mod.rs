@@ -92,17 +92,54 @@ pub fn compute_areas(area: Rect, app: &App) -> Areas {
     }
 }
 
-/// Number of index rows that fit in the table for the given terminal area,
-/// matching the height the table widget itself reserves for its border and
-/// header row. Used to size Page Up/Down navigation to what's actually on
-/// screen instead of a magic constant.
+/// Number of data rows a main-panel table can show in `area`, accounting for
+/// the border it draws and its header row.
+///
+/// Single source of truth for that arithmetic: the tables use it to decide
+/// which rows to build, `draw` uses it to compute the scroll offset, and
+/// `table_page_size` uses it to size Page Up/Down. If these disagreed, paging
+/// would skip or repeat rows.
+pub fn visible_row_capacity(area: Rect) -> usize {
+    area.height.saturating_sub(3) as usize
+}
+
+/// Scroll offset that keeps `selected` on screen while moving as little as
+/// possible — the list stays put until the cursor would leave the viewport.
+///
+/// This used to be ratatui's job, but the tables now hand `Table` only the
+/// rows that are actually visible (building 50k `Row`s to show 40 of them cost
+/// ~93ms per frame on a large cluster), and it can't scroll past what it's
+/// given. So the offset is computed here instead.
+pub fn scroll_offset(
+    current: usize,
+    selected: Option<usize>,
+    capacity: usize,
+    total: usize,
+) -> usize {
+    if capacity == 0 || total == 0 {
+        return 0;
+    }
+
+    let max_offset = total.saturating_sub(capacity);
+    let mut offset = current.min(max_offset);
+
+    if let Some(selected) = selected {
+        if selected < offset {
+            offset = selected;
+        } else if selected >= offset + capacity {
+            offset = selected + 1 - capacity;
+        }
+    }
+
+    offset.min(max_offset)
+}
+
+/// Number of index rows that fit in the table for the given terminal area.
+/// Used to size Page Up/Down navigation to what's actually on screen instead
+/// of a magic constant.
 pub fn table_page_size(terminal_area: Rect, app: &App) -> usize {
     let areas = compute_areas(terminal_area, app);
-    areas
-        .table
-        .map(|a| a.height.saturating_sub(3) as usize)
-        .unwrap_or(0)
-        .max(1)
+    areas.table.map(visible_row_capacity).unwrap_or(0).max(1)
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -128,42 +165,48 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         if let Some(area) = areas.table {
-            // Carrying the offset across frames is what makes the table scroll
-            // only when the cursor would leave the viewport: ratatui's `Table`
-            // performs that minimal "scroll into view" adjustment itself, given
-            // a stable starting offset. Deriving the offset from the selection
-            // each frame instead would pin the cursor and slide the whole list
-            // under it on every keypress. Each panel keeps its own offset, so
-            // switching between them preserves each one's scroll position.
+            // Each panel carries its own scroll offset across frames, so the
+            // list only moves when the cursor would leave the viewport and
+            // switching panels preserves each one's position. The offset is
+            // also what the table slices its rows from — only the rows on
+            // screen are built.
+            let capacity = visible_row_capacity(area);
+
             match app.main_panel {
                 MainPanel::Indices => {
-                    let max_offset = summary.indices.len().saturating_sub(1);
-                    let mut state = TableState::default()
-                        .with_offset(table_offset.min(max_offset))
-                        .with_selected(app.selected_position_in(&summary.indices));
+                    let selected = app.selected_position_in(&summary.indices);
+                    let offset =
+                        scroll_offset(table_offset, selected, capacity, summary.indices.len());
+
+                    // Selection is passed relative to the window, since that's
+                    // all the rows `Table` can see.
+                    let mut state =
+                        TableState::default().with_selected(selected.map(|s| s - offset));
 
                     frame.render_stateful_widget(
-                        IndicesTable::new(app, &summary.indices),
+                        IndicesTable::new(app, &summary.indices, offset),
                         area,
                         &mut state,
                     );
-                    table_offset = state.offset();
+                    table_offset = offset;
                 }
                 MainPanel::Nodes => {
                     // Filtered once here and handed to the widget, mirroring
                     // how `summary.indices` is threaded into the indices table.
                     let visible_nodes = app.visible_nodes();
-                    let max_offset = visible_nodes.len().saturating_sub(1);
-                    let mut state = TableState::default()
-                        .with_offset(node_table_offset.min(max_offset))
-                        .with_selected(app.selected_node_position_in(&visible_nodes));
+                    let selected = app.selected_node_position_in(&visible_nodes);
+                    let offset =
+                        scroll_offset(node_table_offset, selected, capacity, visible_nodes.len());
+
+                    let mut state =
+                        TableState::default().with_selected(selected.map(|s| s - offset));
 
                     frame.render_stateful_widget(
-                        NodesTable::new(app, &visible_nodes, app.nodes.len()),
+                        NodesTable::new(app, &visible_nodes, offset),
                         area,
                         &mut state,
                     );
-                    node_table_offset = state.offset();
+                    node_table_offset = offset;
                 }
             }
         }
@@ -186,4 +229,54 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     app.table_offset = table_offset;
     app.node_table_offset = node_table_offset;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scroll_offset_keeps_list_still_while_cursor_is_on_screen() {
+        // The defining behaviour: the cursor moves within a stable page rather
+        // than the list sliding under a pinned cursor.
+        assert_eq!(scroll_offset(10, Some(10), 5, 100), 10);
+        assert_eq!(scroll_offset(10, Some(12), 5, 100), 10);
+        assert_eq!(scroll_offset(10, Some(14), 5, 100), 10);
+    }
+
+    #[test]
+    fn test_scroll_offset_follows_cursor_off_either_edge() {
+        // Moving past the bottom scrolls by exactly one row...
+        assert_eq!(scroll_offset(10, Some(15), 5, 100), 11);
+        // ...and past the top likewise.
+        assert_eq!(scroll_offset(10, Some(9), 5, 100), 9);
+        // A jump (Page Down, End) brings the target into view in one step.
+        assert_eq!(scroll_offset(10, Some(80), 5, 100), 76);
+        assert_eq!(scroll_offset(80, Some(0), 5, 100), 0);
+    }
+
+    #[test]
+    fn test_scroll_offset_never_scrolls_past_the_end() {
+        // The last page is flush with the end of the list, so there is never
+        // empty space below the final row.
+        assert_eq!(scroll_offset(99, Some(99), 5, 100), 95);
+        assert_eq!(scroll_offset(500, None, 5, 100), 95);
+        // A list shorter than the viewport never scrolls at all.
+        assert_eq!(scroll_offset(3, Some(1), 20, 4), 0);
+    }
+
+    #[test]
+    fn test_scroll_offset_degenerate_cases() {
+        assert_eq!(scroll_offset(7, Some(3), 0, 100), 0);
+        assert_eq!(scroll_offset(7, Some(3), 5, 0), 0);
+        assert_eq!(scroll_offset(0, None, 5, 100), 0);
+    }
+
+    #[test]
+    fn test_visible_row_capacity_reserves_border_and_header() {
+        // Two border rows plus one header row.
+        assert_eq!(visible_row_capacity(Rect::new(0, 0, 80, 10)), 7);
+        assert_eq!(visible_row_capacity(Rect::new(0, 0, 80, 3)), 0);
+        assert_eq!(visible_row_capacity(Rect::new(0, 0, 80, 1)), 0);
+    }
 }

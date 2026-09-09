@@ -52,8 +52,28 @@ impl FilterMode {
 /// redrawn ~20x/second, that's tens of thousands of regex compilations a
 /// second for a filter that never changes between keystrokes.
 enum Compiled {
+    /// A pattern containing no regex metacharacters, matched with a plain
+    /// substring search instead of the regex engine.
+    ///
+    /// `Regex::is_match` is already unanchored, so for a metacharacter-free
+    /// pattern `contains` is exactly equivalent — and on a cluster with tens
+    /// of thousands of indices, running `regex_lite`'s engine over every name
+    /// on every redraw is measurably more expensive than a substring scan.
+    /// Typed filters are overwhelmingly plain substrings, so this is the case
+    /// worth making fast.
+    Literal(String),
     Regex(Regex),
     Jq(CompiledFilter),
+}
+
+/// Characters that give a pattern regex meaning. A pattern free of all of them
+/// matches exactly the same names as a substring search.
+const REGEX_METACHARACTERS: &[char] = &[
+    '\\', '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|',
+];
+
+fn is_plain_substring(pattern: &str) -> bool {
+    !pattern.contains(REGEX_METACHARACTERS)
 }
 
 #[derive(Default)]
@@ -131,6 +151,10 @@ impl FilterState {
         match self.mode {
             // Compiled once here and reused for every index — see the
             // `Compiled` doc comment for why this must not go through jq.
+            FilterMode::Regex if is_plain_substring(text) => {
+                self.error = None;
+                self.compiled = Some(Compiled::Literal(text.to_string()));
+            }
             FilterMode::Regex => match Regex::new(text) {
                 Ok(re) => {
                     self.error = None;
@@ -188,6 +212,7 @@ impl FilterState {
         match &self.compiled {
             // No filter or error means match everything
             None => true,
+            Some(Compiled::Literal(needle)) => name.contains(needle.as_str()),
             Some(Compiled::Regex(re)) => re.is_match(name),
             Some(Compiled::Jq(filter)) => match serde_json::to_value(value) {
                 Ok(json) => evaluate(filter, Val::from(json)).unwrap_or(false),
@@ -355,6 +380,81 @@ mod tests {
 
         assert!(filter_state.is_match(&named("my-test-index")));
         assert!(!filter_state.is_match(&named("production-index")));
+    }
+
+    #[test]
+    fn test_plain_pattern_uses_substring_path() {
+        let mut filter_state = FilterState {
+            input: "logs-app".into(),
+            ..Default::default()
+        };
+        filter_state.recompile();
+
+        assert!(
+            matches!(filter_state.compiled, Some(Compiled::Literal(_))),
+            "a metacharacter-free pattern should skip the regex engine"
+        );
+        assert!(filter_state.is_match(&named("prod-logs-app-01")));
+        assert!(!filter_state.is_match(&named("prod-metrics-01")));
+    }
+
+    #[test]
+    fn test_metacharacters_still_compile_as_regex() {
+        // The substring shortcut must not swallow patterns whose characters
+        // carry regex meaning — anchoring in particular changes what matches.
+        for pattern in ["^logs", "log.", "logs$", "a|b", "lo+gs"] {
+            let mut filter_state = FilterState {
+                input: pattern.into(),
+                ..Default::default()
+            };
+            filter_state.recompile();
+            assert!(
+                matches!(filter_state.compiled, Some(Compiled::Regex(_))),
+                "{pattern} should compile as a regex, not a literal"
+            );
+        }
+
+        let mut anchored = FilterState {
+            input: "^logs".into(),
+            ..Default::default()
+        };
+        anchored.recompile();
+        assert!(anchored.is_match(&named("logs-1")));
+        assert!(
+            !anchored.is_match(&named("my-logs-1")),
+            "^ must still anchor"
+        );
+    }
+
+    #[test]
+    fn test_substring_path_agrees_with_regex_path() {
+        // The shortcut is only sound if it selects exactly what the regex
+        // engine would have selected for the same pattern.
+        let names = [
+            "logs-app-01",
+            "logs-app-02",
+            "metrics-app-01",
+            "app",
+            "APP",
+            "",
+        ];
+
+        for pattern in ["app", "logs", "01", "zzz"] {
+            let mut literal = FilterState {
+                input: pattern.into(),
+                ..Default::default()
+            };
+            literal.recompile();
+
+            let re = Regex::new(pattern).unwrap();
+            for name in names {
+                assert_eq!(
+                    literal.is_match(&named(name)),
+                    re.is_match(name),
+                    "pattern {pattern:?} disagreed on {name:?}"
+                );
+            }
+        }
     }
 
     #[test]
