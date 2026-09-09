@@ -24,6 +24,42 @@ impl IndexRate {
     }
 }
 
+/// Per-node stats shown in the nodes panel, flattened from `_nodes/stats`.
+///
+/// `Serialize` is what the filter box's jq mode reads, so these field names
+/// are the ones a user types in a jq expression against the nodes panel.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct NodeStats {
+    pub name: String,
+    /// `jvm.mem.heap_used_percent`
+    pub heap_used_percent: u64,
+    /// `indices.indexing.index_failed`
+    pub index_failed: u64,
+    /// `indices.bulk.avg_size_in_bytes`
+    pub bulk_avg_size_bytes: u64,
+    /// `process.cpu.percent`
+    pub cpu_percent: u64,
+    /// `breakers.parent.tripped`
+    pub breaker_parent_tripped: u64,
+}
+
+impl NodeStats {
+    pub fn bulk_avg_size_human(&self) -> String {
+        format_bytes(self.bulk_avg_size_bytes)
+    }
+
+    /// Counters are rendered exactly rather than through `format_number`:
+    /// "3" failed bulk requests is actionable in a way that "3.0" is not, and
+    /// these stay small on a healthy cluster.
+    pub fn index_failed_human(&self) -> String {
+        self.index_failed.to_string()
+    }
+
+    pub fn breaker_tripped_human(&self) -> String {
+        self.breaker_parent_tripped.to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct IndexSnapshot {
     pub doc_count: u64,

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::theme;
-use crate::app::App;
+use crate::app::{App, MainPanel};
 
 pub struct Footer<'a> {
     app: &'a App,
@@ -68,9 +68,14 @@ impl<'a> Widget for Footer<'a> {
                 }),
             ));
             spans.push(Span::raw("/"));
+            // Named after whichever table the panel currently holds, so it
+            // doubles as an indicator of which view you're in.
             spans.push(Span::styled(
-                "Indices",
-                Style::new().fg(if self.app.show_indices {
+                match self.app.main_panel {
+                    MainPanel::Indices => "Indices",
+                    MainPanel::Nodes => "Nodes",
+                },
+                Style::new().fg(if self.app.show_main_panel {
                     Color::Green
                 } else {
                     Color::DarkGray

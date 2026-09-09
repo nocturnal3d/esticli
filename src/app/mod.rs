@@ -10,20 +10,39 @@ use std::time::{Duration, Instant};
 
 use crate::elasticsearch::{AuthConfig, EsClient};
 use crate::error::{EstiCliError, Result};
-use crate::models::{ClusterHealth, IndexRate};
+use crate::models::{ClusterHealth, IndexRate, NodeStats};
 use crate::ui::types::Colormap;
 use tokio::sync::{mpsc, Mutex};
 
 use self::actions::Action;
 use self::details::DetailsState;
 use self::filter::FilterState;
-use self::sort::SortState;
+use self::sort::{NodeSortState, SortState};
 
 const MAX_HISTORY_POINTS: usize = 60;
 const MIN_REFRESH_SECS: u64 = 1;
 const MAX_REFRESH_SECS: u64 = 60;
 
-pub type FetchResult = std::result::Result<(Vec<IndexRate>, ClusterHealth), EstiCliError>;
+pub type FetchResult = std::result::Result<FetchPayload, EstiCliError>;
+
+/// Everything one refresh tick brings back.
+pub struct FetchPayload {
+    pub indices: Vec<IndexRate>,
+    pub health: ClusterHealth,
+    /// `None` when the nodes panel wasn't on screen, so `_nodes/stats` was
+    /// never requested — distinct from `Some(vec![])`, which would mean the
+    /// cluster genuinely reported no nodes.
+    pub nodes: Option<Vec<NodeStats>>,
+}
+
+/// Which table occupies the main panel. The two are alternatives rather than
+/// stacked panels: the nodes view replaces the indices view in the same area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MainPanel {
+    #[default]
+    Indices,
+    Nodes,
+}
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -63,7 +82,10 @@ pub struct App {
     pub last_fetch_duration: Option<Duration>,
     pub show_graph: bool,
     pub show_health: bool,
-    pub show_indices: bool,
+    /// Whether the main table panel is on screen at all (toggled with `3`).
+    /// What it *contains* is `main_panel`.
+    pub show_main_panel: bool,
+    pub main_panel: MainPanel,
     pub show_system_indices: bool,
     pub paused: bool,
     /// Name of the currently selected index.
@@ -75,6 +97,10 @@ pub struct App {
     /// First visible table row. Persisted across frames so the table only
     /// scrolls when the selection would leave the viewport — see `ui::draw`.
     pub table_offset: usize,
+    pub nodes: Vec<NodeStats>,
+    /// Node selection, keyed by name for the same reason as `selected_name`.
+    pub selected_node: Option<String>,
+    pub node_table_offset: usize,
     pub excluded_indices: HashSet<String>,
     pub show_help_popup: bool,
     pub help_scroll: usize,
@@ -84,6 +110,7 @@ pub struct App {
 
     // Sub-states
     pub sort: SortState,
+    pub node_sort: NodeSortState,
     pub filter: FilterState,
     pub details: DetailsState,
 
@@ -123,11 +150,15 @@ impl App {
             last_fetch_duration: None,
             show_graph: true,
             show_health: true,
-            show_indices: true,
+            show_main_panel: true,
+            main_panel: MainPanel::default(),
             show_system_indices: false,
             paused: false,
             selected_name: None,
             table_offset: 0,
+            nodes: Vec::new(),
+            selected_node: None,
+            node_table_offset: 0,
             excluded_indices: HashSet::new(),
             show_help_popup: false,
             help_scroll: 0,
@@ -136,6 +167,7 @@ impl App {
             cluster_health: ClusterHealth::default(),
 
             sort: SortState::default(),
+            node_sort: NodeSortState::default(),
             filter: FilterState::default(),
             details: DetailsState::new(),
 
@@ -215,14 +247,25 @@ impl App {
         self.fetch_start = Some(Instant::now());
         let client = Arc::clone(&self.es_client);
         let tx = self.fetch_tx.clone();
+        // `_nodes/stats` is only worth requesting while its panel is on
+        // screen; the indices/health calls stay unconditional because the
+        // header rate and the cluster graph are driven by them whichever
+        // panel is showing.
+        let want_nodes = self.nodes_focused();
 
         tokio::spawn(async move {
             let result = {
                 let mut client = client.lock().await;
-                client.fetch_rates_and_health().await
+                client.fetch_tick(want_nodes).await
             };
 
-            let _ = tx.send(result).await;
+            let _ = tx
+                .send(result.map(|(indices, health, nodes)| FetchPayload {
+                    indices,
+                    health,
+                    nodes,
+                }))
+                .await;
         });
     }
 
@@ -238,12 +281,26 @@ impl App {
                 }
 
                 match result {
-                    Ok((mut indices, health)) => {
+                    Ok(payload) => {
+                        let FetchPayload {
+                            mut indices,
+                            health,
+                            nodes,
+                        } = payload;
+
                         self.update_indices_with_rates(&mut indices);
                         self.sort.sort(&mut indices);
                         self.indices = indices;
                         self.cluster_health = health;
                         self.error = None;
+
+                        // `None` means the request was skipped because the
+                        // panel is hidden, so the last known nodes stay put.
+                        if let Some(mut nodes) = nodes {
+                            self.node_sort.sort(&mut nodes);
+                            self.nodes = nodes;
+                            self.clamp_node_selection();
+                        }
 
                         // Prune index_rate_history for indices that no longer exist
                         let current_index_names: HashSet<String> =
@@ -341,26 +398,57 @@ impl App {
         }
     }
 
-    // Sort delegation
+    // Sort delegation. Each of these acts on whichever panel is on screen,
+    // so the two panels keep independent sort columns and directions.
     pub fn next_column(&mut self) {
-        self.sort.next_column();
-        self.resort();
+        match self.main_panel {
+            MainPanel::Indices => {
+                self.sort.next_column();
+                self.resort();
+            }
+            MainPanel::Nodes => {
+                self.node_sort.next_column();
+                self.resort_nodes();
+            }
+        }
     }
 
     pub fn prev_column(&mut self) {
-        self.sort.prev_column();
-        self.resort();
+        match self.main_panel {
+            MainPanel::Indices => {
+                self.sort.prev_column();
+                self.resort();
+            }
+            MainPanel::Nodes => {
+                self.node_sort.prev_column();
+                self.resort_nodes();
+            }
+        }
     }
 
     pub fn toggle_sort_order(&mut self) {
-        self.sort.toggle_order();
-        self.resort();
+        match self.main_panel {
+            MainPanel::Indices => {
+                self.sort.toggle_order();
+                self.resort();
+            }
+            MainPanel::Nodes => {
+                self.node_sort.toggle_order();
+                self.resort_nodes();
+            }
+        }
     }
 
     fn resort(&mut self) {
         let mut indices = std::mem::take(&mut self.indices);
         self.sort.sort(&mut indices);
         self.indices = indices;
+    }
+
+    fn resort_nodes(&mut self) {
+        let mut nodes = std::mem::take(&mut self.nodes);
+        self.node_sort.sort(&mut nodes);
+        self.nodes = nodes;
     }
 
     pub fn quit(&mut self) {
@@ -375,8 +463,32 @@ impl App {
         self.show_health = !self.show_health;
     }
 
-    pub fn toggle_indices(&mut self) {
-        self.show_indices = !self.show_indices;
+    pub fn toggle_main_panel(&mut self) {
+        self.show_main_panel = !self.show_main_panel;
+    }
+
+    /// Swaps the main panel between the indices and nodes tables. Also
+    /// reveals the panel if it was hidden — pressing the key expecting to see
+    /// nodes and getting nothing would be baffling.
+    pub fn toggle_nodes(&mut self) {
+        self.main_panel = match self.main_panel {
+            MainPanel::Indices => MainPanel::Nodes,
+            MainPanel::Nodes => MainPanel::Indices,
+        };
+        self.show_main_panel = true;
+
+        // Nothing has been fetched for a panel that has never been focused,
+        // so pull it in on the next loop iteration instead of leaving the
+        // table empty until the current interval elapses.
+        if self.nodes_focused() && self.nodes.is_empty() {
+            self.last_refresh = None;
+        }
+    }
+
+    /// Whether the nodes panel is the one currently on screen. Gates the
+    /// `_nodes/stats` request in `start_fetch`.
+    pub fn nodes_focused(&self) -> bool {
+        self.show_main_panel && self.main_panel == MainPanel::Nodes
     }
 
     pub fn toggle_system_indices(&mut self) {
@@ -387,32 +499,109 @@ impl App {
         self.paused = !self.paused;
     }
 
+    // Navigation acts on whichever panel is on screen. Each panel keeps its
+    // own cursor, so switching back and forth doesn't lose your place.
     pub fn select_up(&mut self) {
-        self.move_selection(-1);
+        self.move_cursor(-1);
     }
 
     pub fn select_down(&mut self) {
-        self.move_selection(1);
+        self.move_cursor(1);
     }
 
     pub fn select_page_up(&mut self, page_size: usize) {
-        self.move_selection(-(page_size as i32));
+        self.move_cursor(-(page_size as i32));
     }
 
     pub fn select_page_down(&mut self, page_size: usize) {
-        self.move_selection(page_size as i32);
+        self.move_cursor(page_size as i32);
+    }
+
+    fn move_cursor(&mut self, delta: i32) {
+        match self.main_panel {
+            MainPanel::Indices => self.move_selection(delta),
+            MainPanel::Nodes => self.move_node_selection(delta),
+        }
     }
 
     pub fn select_first(&mut self) {
-        if let Some(name) = self.filtered_indices().first().map(|i| i.name.clone()) {
-            self.selected_name = Some(name);
+        match self.main_panel {
+            MainPanel::Indices => {
+                if let Some(name) = self.filtered_indices().first().map(|i| i.name.clone()) {
+                    self.selected_name = Some(name);
+                }
+            }
+            MainPanel::Nodes => {
+                if let Some(name) = self.visible_nodes().first().map(|n| n.name.clone()) {
+                    self.selected_node = Some(name);
+                }
+            }
         }
     }
 
     pub fn select_last(&mut self) {
-        if let Some(name) = self.filtered_indices().last().map(|i| i.name.clone()) {
-            self.selected_name = Some(name);
+        match self.main_panel {
+            MainPanel::Indices => {
+                if let Some(name) = self.filtered_indices().last().map(|i| i.name.clone()) {
+                    self.selected_name = Some(name);
+                }
+            }
+            MainPanel::Nodes => {
+                if let Some(name) = self.visible_nodes().last().map(|n| n.name.clone()) {
+                    self.selected_node = Some(name);
+                }
+            }
         }
+    }
+
+    /// Nodes surviving the filter box. The same filter drives both panels —
+    /// regex against the node name, jq against the serialized node — so
+    /// entering filter mode does something visible whichever panel is up.
+    /// Exclusions (`x`) remain index-only and are not applied here.
+    pub fn visible_nodes(&self) -> Vec<&NodeStats> {
+        self.nodes
+            .iter()
+            .filter(|node| self.filter.matches(&node.name, node))
+            .collect()
+    }
+
+    /// Row position of the node selection within `visible`.
+    pub fn selected_node_position_in(&self, visible: &[&NodeStats]) -> Option<usize> {
+        let name = self.selected_node.as_deref()?;
+        visible.iter().position(|node| node.name == name)
+    }
+
+    fn clamp_node_selection(&mut self) {
+        let Some(name) = self.selected_node.as_deref() else {
+            return;
+        };
+        if !self.nodes.iter().any(|node| node.name == name) {
+            self.selected_node = None;
+        }
+    }
+
+    fn move_node_selection(&mut self, delta: i32) {
+        let next_name = {
+            let visible = self.visible_nodes();
+            match visible.len() {
+                0 => None,
+                len => {
+                    let last = (len - 1) as i32;
+                    let next = match self.selected_node_position_in(&visible) {
+                        Some(current) => (current as i32 + delta).clamp(0, last),
+                        None => {
+                            if delta > 0 {
+                                0
+                            } else {
+                                last
+                            }
+                        }
+                    };
+                    Some(visible[next as usize].name.clone())
+                }
+            }
+        };
+        self.selected_node = next_name;
     }
 
     /// Row position of the selection within `visible`, or `None` if nothing
@@ -634,7 +823,8 @@ impl App {
             Action::TogglePause => self.toggle_pause(),
             Action::ToggleGraph => self.toggle_graph(),
             Action::ToggleHealth => self.toggle_health(),
-            Action::ToggleIndices => self.toggle_indices(),
+            Action::ToggleIndices => self.toggle_main_panel(),
+            Action::ToggleNodes => self.toggle_nodes(),
             Action::ToggleSystemIndices => self.toggle_system_indices(),
             Action::ShowDetails => self.show_index_details(),
             Action::ToggleExclude => self.toggle_exclude_selected(),
@@ -662,6 +852,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::NodeStats;
     use crate::ui::types::{SortColumn, SortOrder};
 
     fn setup_mock_app() -> App {
@@ -813,6 +1004,122 @@ mod tests {
         assert_eq!(app.selected_position(), Some(0));
         let filtered = app.filtered_indices();
         assert_eq!(filtered[0].name, "index-2");
+    }
+
+    fn mock_node(name: &str, heap: u64) -> NodeStats {
+        NodeStats {
+            name: name.to_string(),
+            heap_used_percent: heap,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_nodes_only_fetched_while_panel_is_focused() {
+        let mut app = setup_mock_app();
+
+        // Indices panel showing: no reason to ask for _nodes/stats.
+        assert!(!app.nodes_focused());
+
+        app.toggle_nodes();
+        assert!(app.nodes_focused());
+
+        // Hiding the panel entirely also stops the request.
+        app.toggle_main_panel();
+        assert!(!app.nodes_focused());
+
+        // ...and pressing the nodes key again brings the panel back rather
+        // than silently switching hidden content.
+        app.toggle_main_panel();
+        assert!(app.nodes_focused());
+        app.toggle_nodes();
+        assert_eq!(app.main_panel, MainPanel::Indices);
+        assert!(app.show_main_panel);
+    }
+
+    #[test]
+    fn test_navigation_follows_focused_panel() {
+        let mut app = setup_mock_app();
+        app.nodes = vec![mock_node("node-a", 10), mock_node("node-b", 20)];
+
+        // On the indices panel, j/k move the index cursor only.
+        app.select_down();
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
+        assert_eq!(app.selected_node, None);
+
+        // Switching panels moves the cursor to the node list, leaving the
+        // index selection where it was.
+        app.toggle_nodes();
+        app.select_down();
+        assert_eq!(app.selected_node.as_deref(), Some("node-a"));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
+
+        app.select_last();
+        assert_eq!(app.selected_node.as_deref(), Some("node-b"));
+
+        // Switching back resumes the index cursor from where it was left.
+        app.toggle_nodes();
+        app.select_down();
+        assert_eq!(app.selected_name.as_deref(), Some("index-2"));
+        assert_eq!(app.selected_node.as_deref(), Some("node-b"));
+    }
+
+    #[test]
+    fn test_sorting_applies_to_focused_panel() {
+        let mut app = setup_mock_app();
+        let index_column = app.sort.column;
+        let node_column = app.node_sort.column;
+
+        app.toggle_nodes();
+        app.next_column();
+        assert_ne!(app.node_sort.column, node_column);
+        assert_eq!(
+            app.sort.column, index_column,
+            "index sort must be untouched"
+        );
+    }
+
+    #[test]
+    fn test_filter_applies_to_nodes_panel() {
+        let mut app = setup_mock_app();
+        app.nodes = vec![
+            mock_node("es-hot-1", 10),
+            mock_node("es-hot-2", 20),
+            mock_node("es-warm-1", 30),
+        ];
+        app.toggle_nodes();
+        assert_eq!(app.visible_nodes().len(), 3);
+
+        // The same filter box drives whichever panel is focused, so entering
+        // a regex must narrow the node list too.
+        app.filter.input = app.filter.input.clone().with_value("hot".to_string());
+        app.filter.recompile();
+
+        let visible: Vec<&str> = app
+            .visible_nodes()
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(visible, vec!["es-hot-1", "es-hot-2"]);
+
+        // Navigation stays inside the filtered set.
+        app.select_last();
+        assert_eq!(app.selected_node.as_deref(), Some("es-hot-2"));
+        app.select_down();
+        assert_eq!(app.selected_node.as_deref(), Some("es-hot-2"));
+    }
+
+    #[test]
+    fn test_node_selection_dropped_when_node_disappears() {
+        let mut app = setup_mock_app();
+        app.nodes = vec![mock_node("node-a", 10), mock_node("node-b", 20)];
+        app.toggle_nodes();
+        app.select_first();
+        assert_eq!(app.selected_node.as_deref(), Some("node-a"));
+
+        app.nodes.retain(|n| n.name != "node-a");
+        app.clamp_node_selection();
+        assert_eq!(app.selected_node, None);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::error::{EstiCliError, Result};
-use crate::models::{ClusterHealth, IndexDetails, IndexRate, IndexSnapshot};
+use crate::models::{ClusterHealth, IndexDetails, IndexRate, IndexSnapshot, NodeStats};
 use url::Url;
 
 #[derive(Clone)]
@@ -79,24 +79,41 @@ impl EsClient {
         serde_json::from_slice(&body).map_err(EstiCliError::from)
     }
 
-    /// Fetches per-index rates and cluster health together, issuing both
-    /// requests concurrently rather than one after the other — they are
-    /// independent, and on a slow cluster serialising them doubled the
-    /// latency of every refresh tick.
-    pub async fn fetch_rates_and_health(&mut self) -> Result<(Vec<IndexRate>, ClusterHealth)> {
-        // Both halves borrow `&self`, which is what makes the join legal;
-        // the `&mut self` snapshot bookkeeping runs once both are back.
-        let (snapshot_res, health_res) = tokio::join!(
+    /// Fetches everything one refresh tick needs, issuing the requests
+    /// concurrently rather than one after the other — they are independent,
+    /// and on a slow cluster serialising them multiplied the latency of every
+    /// tick.
+    ///
+    /// `want_nodes` gates the `_nodes/stats` request on the nodes panel
+    /// actually being on screen; when it is `false` no request is made and
+    /// the returned nodes are `None` (as opposed to an empty list, which
+    /// would mean "the cluster reported no nodes").
+    pub async fn fetch_tick(
+        &mut self,
+        want_nodes: bool,
+    ) -> Result<(Vec<IndexRate>, ClusterHealth, Option<Vec<NodeStats>>)> {
+        // Every half borrows `&self`, which is what makes the join legal;
+        // the `&mut self` snapshot bookkeeping runs once they are all back.
+        let (snapshot_res, health_res, nodes_res) = tokio::join!(
             super::stats::fetch_snapshot(self),
             super::stats::fetch_cluster_health(self),
+            async {
+                if want_nodes {
+                    Some(super::nodes::fetch_node_stats(self).await)
+                } else {
+                    None
+                }
+            },
         );
 
         let (now, snapshot) = snapshot_res?;
         let health = health_res?;
+        let nodes = nodes_res.transpose()?;
 
         Ok((
             super::stats::rates_from_snapshot(self, now, snapshot),
             health,
+            nodes,
         ))
     }
 

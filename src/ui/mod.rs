@@ -10,17 +10,20 @@ pub mod footer;
 pub mod header;
 pub mod health;
 pub mod help_popup;
+pub mod nodes;
+pub mod panel_title;
 pub mod table;
 pub mod theme;
 pub mod types;
 
-use crate::app::App;
+use crate::app::{App, MainPanel};
 use chart::RateChart;
 use details_popup::DetailsPopup;
 use footer::Footer;
 use header::Header;
 use health::ClusterHealthWidget;
 use help_popup::HelpPopup;
+use nodes::NodesTable;
 use table::IndicesTable;
 
 /// The main-screen areas, computed once from the visibility toggles so
@@ -41,8 +44,8 @@ pub fn compute_areas(area: Rect, app: &App) -> Areas {
     if app.show_graph || app.show_health {
         constraints.push(Constraint::Length(8)); // Row for graph/health
     }
-    if app.show_indices {
-        constraints.push(Constraint::Min(0)); // Table
+    if app.show_main_panel {
+        constraints.push(Constraint::Min(0)); // Main table panel
     }
     constraints.push(Constraint::Length(3)); // Footer always visible
 
@@ -72,7 +75,7 @@ pub fn compute_areas(area: Rect, app: &App) -> Areas {
         }
     }
 
-    let table = if app.show_indices {
+    let table = if app.show_main_panel {
         area_iter.next()
     } else {
         None
@@ -106,6 +109,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Read the persisted scroll offset up front and write it back at the end:
     // everything in between borrows `app` immutably.
     let mut table_offset = app.table_offset;
+    let mut node_table_offset = app.node_table_offset;
 
     {
         let areas = compute_areas(frame.area(), app);
@@ -129,18 +133,39 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // performs that minimal "scroll into view" adjustment itself, given
             // a stable starting offset. Deriving the offset from the selection
             // each frame instead would pin the cursor and slide the whole list
-            // under it on every keypress.
-            let max_offset = summary.indices.len().saturating_sub(1);
-            let mut state = TableState::default()
-                .with_offset(table_offset.min(max_offset))
-                .with_selected(app.selected_position_in(&summary.indices));
+            // under it on every keypress. Each panel keeps its own offset, so
+            // switching between them preserves each one's scroll position.
+            match app.main_panel {
+                MainPanel::Indices => {
+                    let max_offset = summary.indices.len().saturating_sub(1);
+                    let mut state = TableState::default()
+                        .with_offset(table_offset.min(max_offset))
+                        .with_selected(app.selected_position_in(&summary.indices));
 
-            frame.render_stateful_widget(
-                IndicesTable::new(app, &summary.indices),
-                area,
-                &mut state,
-            );
-            table_offset = state.offset();
+                    frame.render_stateful_widget(
+                        IndicesTable::new(app, &summary.indices),
+                        area,
+                        &mut state,
+                    );
+                    table_offset = state.offset();
+                }
+                MainPanel::Nodes => {
+                    // Filtered once here and handed to the widget, mirroring
+                    // how `summary.indices` is threaded into the indices table.
+                    let visible_nodes = app.visible_nodes();
+                    let max_offset = visible_nodes.len().saturating_sub(1);
+                    let mut state = TableState::default()
+                        .with_offset(node_table_offset.min(max_offset))
+                        .with_selected(app.selected_node_position_in(&visible_nodes));
+
+                    frame.render_stateful_widget(
+                        NodesTable::new(app, &visible_nodes, app.nodes.len()),
+                        area,
+                        &mut state,
+                    );
+                    node_table_offset = state.offset();
+                }
+            }
         }
 
         frame.render_widget(
@@ -160,4 +185,5 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     app.table_offset = table_offset;
+    app.node_table_offset = node_table_offset;
 }

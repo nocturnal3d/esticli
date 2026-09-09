@@ -2,6 +2,7 @@ use crossterm::event::Event;
 use jaq_core::{load, Compiler, Ctx, Native, RcIter};
 use jaq_json::Val;
 use regex_lite::Regex;
+use serde::Serialize;
 use std::sync::Arc;
 use std::time::Instant;
 use tui_input::backend::crossterm::EventHandler;
@@ -176,16 +177,27 @@ impl FilterState {
         }
     }
 
-    pub fn is_match(&self, index: &IndexRate) -> bool {
+    /// Matches any named, serializable row against the active filter.
+    ///
+    /// Regex mode only ever looks at `name` — see the `Compiled` doc comment
+    /// for why it must not be routed through jq. jq mode serializes `value`,
+    /// so the fields available to the expression are whatever that type
+    /// serializes to, which is how the same filter box can drive both the
+    /// indices and the nodes panel.
+    pub fn matches<T: Serialize>(&self, name: &str, value: &T) -> bool {
         match &self.compiled {
             // No filter or error means match everything
             None => true,
-            Some(Compiled::Regex(re)) => re.is_match(&index.name),
-            Some(Compiled::Jq(filter)) => match serde_json::to_value(index) {
+            Some(Compiled::Regex(re)) => re.is_match(name),
+            Some(Compiled::Jq(filter)) => match serde_json::to_value(value) {
                 Ok(json) => evaluate(filter, Val::from(json)).unwrap_or(false),
                 Err(_) => true,
             },
         }
+    }
+
+    pub fn is_match(&self, index: &IndexRate) -> bool {
+        self.matches(&index.name, index)
     }
 }
 
