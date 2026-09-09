@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The indices table now scrolls only when the cursor would leave the viewport, instead of re-centering the selected row on every frame. Previously the cursor was effectively pinned to the middle of the table and the whole list slid underneath it on each `j`/`k`; now the cursor moves within a stable page, which is what every other list-shaped TUI does.
+- The cluster's `_stats` and `_cluster/health` requests are now issued concurrently on each refresh tick rather than one after the other, roughly halving the latency of a refresh against a slow or distant cluster.
+
+### Fixed
+- The table selection no longer drifts onto a different index. It was tracked as a row position, but the list is re-sorted on every refresh (by rate, by default) — so on a busy cluster the highlighted row would silently end up on an index other than the one you selected, and `Enter`/`x` would act on that other index. Selection is now tracked by index name and follows the index across re-sorts, filter changes, and system-index toggling; it is dropped only when the index itself disappears from the cluster.
+- `--colormap` had three disagreeing defaults: the CLI defaulted to `warm`, `Colormap::default()` was `turbo`, and the README documented `inferno`. All three are now `warm`, with the CLI default derived from `Colormap::default()` so they cannot drift apart again. The README also documented `--rate-samples` as defaulting to 3 in one place; the actual default is 10.
+
 ## [0.2.2] - 2026-07-25
 
 ### Changed

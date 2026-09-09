@@ -79,8 +79,25 @@ impl EsClient {
         serde_json::from_slice(&body).map_err(EstiCliError::from)
     }
 
-    pub async fn fetch_index_rates(&mut self) -> Result<Vec<IndexRate>> {
-        super::stats::fetch_index_rates(self).await
+    /// Fetches per-index rates and cluster health together, issuing both
+    /// requests concurrently rather than one after the other — they are
+    /// independent, and on a slow cluster serialising them doubled the
+    /// latency of every refresh tick.
+    pub async fn fetch_rates_and_health(&mut self) -> Result<(Vec<IndexRate>, ClusterHealth)> {
+        // Both halves borrow `&self`, which is what makes the join legal;
+        // the `&mut self` snapshot bookkeeping runs once both are back.
+        let (snapshot_res, health_res) = tokio::join!(
+            super::stats::fetch_snapshot(self),
+            super::stats::fetch_cluster_health(self),
+        );
+
+        let (now, snapshot) = snapshot_res?;
+        let health = health_res?;
+
+        Ok((
+            super::stats::rates_from_snapshot(self, now, snapshot),
+            health,
+        ))
     }
 
     pub async fn fetch_index_details(
@@ -92,9 +109,5 @@ impl EsClient {
     ) -> Result<IndexDetails> {
         super::details::fetch_index_details(self, index_name, doc_count, rate_per_sec, size_bytes)
             .await
-    }
-
-    pub async fn fetch_cluster_health(&mut self) -> Result<ClusterHealth> {
-        super::stats::fetch_cluster_health(self).await
     }
 }

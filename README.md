@@ -69,7 +69,7 @@ esticli --refresh 10
 # Custom colormap (inferno, magma, plasma, viridis, turbo, spectral, rainbow, cividis, warm, cool)
 esticli --colormap magma
 
-# Increase rate averaging samples (smoother rates, default: 3)
+# Increase rate averaging samples (smoother rates, default: 10)
 esticli --rate-samples 5
 ```
 
@@ -92,7 +92,7 @@ esticli --rate-samples 5
 
 | Colormap   | Description                                            |
 |------------|--------------------------------------------------------|
-| `inferno`  | Perceptually uniform, black-red-yellow-white (default) |
+| `inferno`  | Perceptually uniform, black-red-yellow-white           |
 | `magma`    | Perceptually uniform, black-purple-orange-white        |
 | `plasma`   | Perceptually uniform, blue-purple-orange-yellow        |
 | `viridis`  | Perceptually uniform, blue-green-yellow                |
@@ -100,7 +100,7 @@ esticli --rate-samples 5
 | `spectral` | Diverging, red-orange-yellow-green-blue                |
 | `rainbow`  | Classic rainbow spectrum                               |
 | `cividis`  | Colorblind-friendly, blue-yellow                       |
-| `warm`     | Warm tones, pink-orange-yellow                         |
+| `warm`     | Warm tones, pink-orange-yellow (default)               |
 | `cool`     | Cool tones, cyan-blue-purple                           |
 
 

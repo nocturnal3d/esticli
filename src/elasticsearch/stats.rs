@@ -5,7 +5,18 @@ use crate::models::{ClusterHealth, IndexRate, IndexSnapshot};
 use std::collections::HashMap;
 use std::time::Instant;
 
-pub async fn fetch_index_rates(client: &mut EsClient) -> Result<Vec<IndexRate>> {
+/// A point-in-time `_stats` reading: when it was taken, and the per-index
+/// counters it contained.
+pub type Snapshot = (Instant, HashMap<String, IndexSnapshot>);
+
+/// Fetches a fresh `_stats` snapshot.
+///
+/// Deliberately takes `&EsClient` rather than `&mut`: the rate calculation
+/// needs `&mut` (it swaps in the new baseline), but keeping the *request*
+/// immutable is what lets it be `tokio::join!`ed with the cluster-health
+/// request instead of running after it. The `&mut` half happens once both
+/// responses are back, in `rates_from_snapshot`.
+pub async fn fetch_snapshot(client: &EsClient) -> Result<Snapshot> {
     let url = client.base_url.join("_stats/indexing,docs,store")?;
     let request = client.client.get(url);
 
@@ -14,7 +25,7 @@ pub async fn fetch_index_rates(client: &mut EsClient) -> Result<Vec<IndexRate>> 
     let now = Instant::now();
 
     // Map stats to internal models
-    let current_snapshot: HashMap<String, IndexSnapshot> = stats
+    let snapshot: HashMap<String, IndexSnapshot> = stats
         .indices
         .iter()
         .map(|(name, entry)| {
@@ -30,50 +41,62 @@ pub async fn fetch_index_rates(client: &mut EsClient) -> Result<Vec<IndexRate>> 
         })
         .collect();
 
-    // Calculate rates based on the previous snapshot
+    Ok((now, snapshot))
+}
+
+/// Turns a fresh snapshot into per-index rates by diffing it against the
+/// previous one, then stores it as the baseline for the next call. The very
+/// first snapshot has nothing to diff against, so every rate is 0.
+pub fn rates_from_snapshot(
+    client: &mut EsClient,
+    now: Instant,
+    current: HashMap<String, IndexSnapshot>,
+) -> Vec<IndexRate> {
     let rates: Vec<IndexRate> = if let Some((prev_time, prev_snapshot)) = &client.previous_snapshot
     {
         let elapsed = now.duration_since(*prev_time).as_secs_f64();
 
-        current_snapshot
+        current
             .iter()
-            .map(|(name, current)| {
+            .map(|(name, entry)| {
                 let rate = prev_snapshot
                     .get(name)
-                    .filter(|prev| elapsed > 0.0 && current.index_total >= prev.index_total)
-                    .map(|prev| (current.index_total - prev.index_total) as f64 / elapsed)
+                    .filter(|prev| elapsed > 0.0 && entry.index_total >= prev.index_total)
+                    .map(|prev| (entry.index_total - prev.index_total) as f64 / elapsed)
                     .unwrap_or(0.0);
 
                 IndexRate {
                     name: name.clone(),
-                    doc_count: current.doc_count,
+                    doc_count: entry.doc_count,
                     rate_per_sec: rate,
-                    size_bytes: current.size_bytes,
-                    health: current.health.clone(),
+                    size_bytes: entry.size_bytes,
+                    health: entry.health.clone(),
                 }
             })
             .collect()
     } else {
         // First fetch, no rate data yet
-        current_snapshot
+        current
             .iter()
-            .map(|(name, current)| IndexRate {
+            .map(|(name, entry)| IndexRate {
                 name: name.clone(),
-                doc_count: current.doc_count,
+                doc_count: entry.doc_count,
                 rate_per_sec: 0.0,
-                size_bytes: current.size_bytes,
-                health: current.health.clone(),
+                size_bytes: entry.size_bytes,
+                health: entry.health.clone(),
             })
             .collect()
     };
 
     // Store current snapshot for the next calculation
-    client.previous_snapshot = Some((now, current_snapshot));
+    client.previous_snapshot = Some((now, current));
 
-    Ok(rates)
+    rates
 }
 
-pub async fn fetch_cluster_health(client: &mut EsClient) -> Result<ClusterHealth> {
+/// Fetches cluster health. Takes `&EsClient` for the same reason as
+/// `fetch_snapshot` — so the two can be issued concurrently.
+pub async fn fetch_cluster_health(client: &EsClient) -> Result<ClusterHealth> {
     let url = client.base_url.join("_cluster/health")?;
     let request = client.client.get(url);
 

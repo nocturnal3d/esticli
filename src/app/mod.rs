@@ -66,7 +66,15 @@ pub struct App {
     pub show_indices: bool,
     pub show_system_indices: bool,
     pub paused: bool,
-    pub selected_index: Option<usize>,
+    /// Name of the currently selected index.
+    ///
+    /// Tracked by name rather than by row position because the list is
+    /// re-sorted on every refresh (by rate, by default), so a positional
+    /// cursor would silently slide onto a different index between ticks.
+    pub selected_name: Option<String>,
+    /// First visible table row. Persisted across frames so the table only
+    /// scrolls when the selection would leave the viewport — see `ui::draw`.
+    pub table_offset: usize,
     pub excluded_indices: HashSet<String>,
     pub show_help_popup: bool,
     pub help_scroll: usize,
@@ -118,7 +126,8 @@ impl App {
             show_indices: true,
             show_system_indices: false,
             paused: false,
-            selected_index: None,
+            selected_name: None,
+            table_offset: 0,
             excluded_indices: HashSet::new(),
             show_help_popup: false,
             help_scroll: 0,
@@ -210,14 +219,7 @@ impl App {
         tokio::spawn(async move {
             let result = {
                 let mut client = client.lock().await;
-                let rates_res = client.fetch_index_rates().await;
-                let health_res = client.fetch_cluster_health().await;
-
-                match (rates_res, health_res) {
-                    (Ok(rates), Ok(health)) => Ok((rates, health)),
-                    (Err(e), _) => Err(e),
-                    (_, Err(e)) => Err(e),
-                }
+                client.fetch_rates_and_health().await
             };
 
             let _ = tx.send(result).await;
@@ -248,6 +250,8 @@ impl App {
                             self.indices.iter().map(|i| i.name.clone()).collect();
                         self.index_rate_history
                             .retain(|name, _| current_index_names.contains(name));
+
+                        self.clamp_selection();
 
                         let total_rate = self.total_cluster_rate() as u64;
                         if self.rate_history.len() >= MAX_HISTORY_POINTS {
@@ -377,8 +381,6 @@ impl App {
 
     pub fn toggle_system_indices(&mut self) {
         self.show_system_indices = !self.show_system_indices;
-        // Reset selection when toggling to avoid out-of-bounds
-        self.selected_index = None;
     }
 
     pub fn toggle_pause(&mut self) {
@@ -402,38 +404,68 @@ impl App {
     }
 
     pub fn select_first(&mut self) {
-        if !self.filtered_indices().is_empty() {
-            self.selected_index = Some(0);
+        if let Some(name) = self.filtered_indices().first().map(|i| i.name.clone()) {
+            self.selected_name = Some(name);
         }
     }
 
     pub fn select_last(&mut self) {
-        let count = self.filtered_indices().len();
-        if count > 0 {
-            self.selected_index = Some(count.saturating_sub(1));
+        if let Some(name) = self.filtered_indices().last().map(|i| i.name.clone()) {
+            self.selected_name = Some(name);
+        }
+    }
+
+    /// Row position of the selection within `visible`, or `None` if nothing
+    /// is selected or the selected index isn't part of that list. Widgets
+    /// that already hold the visible slice should use this rather than
+    /// re-filtering.
+    pub fn selected_position_in(&self, visible: &[&IndexRate]) -> Option<usize> {
+        let name = self.selected_name.as_deref()?;
+        visible.iter().position(|index| index.name == name)
+    }
+
+    /// Row position of the selection in the currently visible list.
+    pub fn selected_position(&self) -> Option<usize> {
+        self.selected_position_in(&self.filtered_indices())
+    }
+
+    /// Clears the selection if the selected index no longer exists in the
+    /// cluster. A selection that is merely filtered out is deliberately kept,
+    /// so it reappears when the filter is cleared.
+    fn clamp_selection(&mut self) {
+        let Some(name) = self.selected_name.as_deref() else {
+            return;
+        };
+        if !self.indices.iter().any(|index| index.name == name) {
+            self.selected_name = None;
         }
     }
 
     fn move_selection(&mut self, delta: i32) {
-        let count = self.filtered_indices().len();
-        if count == 0 {
-            self.selected_index = None;
-            return;
-        }
-
-        let next = match self.selected_index {
-            Some(current) => (current as i32 + delta)
-                .max(0)
-                .min(count.saturating_sub(1) as i32),
-            None => {
-                if delta > 0 {
-                    0
-                } else {
-                    count.saturating_sub(1) as i32
+        let next_name = {
+            let visible = self.filtered_indices();
+            match visible.len() {
+                0 => None,
+                len => {
+                    let last = (len - 1) as i32;
+                    let next = match self.selected_position_in(&visible) {
+                        Some(current) => (current as i32 + delta).clamp(0, last),
+                        // Nothing selected, or the selection is currently
+                        // filtered out: enter the list from the end the
+                        // movement is coming from.
+                        None => {
+                            if delta > 0 {
+                                0
+                            } else {
+                                last
+                            }
+                        }
+                    };
+                    Some(visible[next as usize].name.clone())
                 }
             }
         };
-        self.selected_index = Some(next as usize);
+        self.selected_name = next_name;
     }
 
     // Filter delegation
@@ -459,23 +491,25 @@ impl App {
 
     // Details delegation
     pub fn show_index_details(&mut self) {
-        if let Some(selected) = self.selected_index {
-            let filtered = self.filtered_indices();
-            if let Some(index) = filtered.get(selected) {
-                let index_name = index.name.clone();
-                let doc_count = index.doc_count;
-                let rate_per_sec = index.rate_per_sec;
-                let size_bytes = index.size_bytes;
+        let Some(name) = self.selected_name.clone() else {
+            return;
+        };
+        let Some((doc_count, rate_per_sec, size_bytes)) = self
+            .indices
+            .iter()
+            .find(|index| index.name == name && self.is_visible(index))
+            .map(|index| (index.doc_count, index.rate_per_sec, index.size_bytes))
+        else {
+            return;
+        };
 
-                self.details.fetch(
-                    self.es_client.clone(),
-                    index_name,
-                    doc_count,
-                    rate_per_sec,
-                    size_bytes,
-                );
-            }
-        }
+        self.details.fetch(
+            self.es_client.clone(),
+            name,
+            doc_count,
+            rate_per_sec,
+            size_bytes,
+        );
     }
 
     pub fn close_details_popup(&mut self) {
@@ -528,24 +562,30 @@ impl App {
     }
 
     pub fn toggle_exclude_selected(&mut self) {
-        if let Some(selected) = self.selected_index {
-            let filtered = self.filtered_indices();
-            if let Some(index) = filtered.get(selected) {
-                let name = index.name.clone();
-                if self.excluded_indices.contains(&name) {
-                    self.excluded_indices.remove(&name);
-                } else {
-                    self.excluded_indices.insert(name);
-                    // Move selection to next item if possible
-                    let new_count = self.filtered_indices().len();
-                    if new_count == 0 {
-                        self.selected_index = None;
-                    } else if selected >= new_count {
-                        self.selected_index = Some(new_count.saturating_sub(1));
-                    }
-                }
-            }
+        let Some(name) = self.selected_name.clone() else {
+            return;
+        };
+
+        if self.excluded_indices.remove(&name) {
+            return;
         }
+
+        // Excluding hides the index, so the selection has to be re-anchored.
+        // Remember the row it occupied and keep the cursor there, falling
+        // back to the last row if it was the bottom one.
+        let Some(position) = self.selected_position() else {
+            return;
+        };
+        self.excluded_indices.insert(name);
+
+        let next_name = {
+            let visible = self.filtered_indices();
+            visible
+                .get(position)
+                .or_else(|| visible.last())
+                .map(|index| index.name.clone())
+        };
+        self.selected_name = next_name;
     }
 
     pub fn clear_exclusions(&mut self) {
@@ -622,6 +662,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::types::{SortColumn, SortOrder};
 
     fn setup_mock_app() -> App {
         let mut app = App::new(
@@ -666,35 +707,35 @@ mod tests {
         let mut app = setup_mock_app();
 
         // Initial state
-        assert_eq!(app.selected_index, None);
+        assert_eq!(app.selected_name, None);
 
         // Move down selects first
         app.select_down();
-        assert_eq!(app.selected_index, Some(0));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
 
         // Move down again
         app.select_down();
-        assert_eq!(app.selected_index, Some(1));
+        assert_eq!(app.selected_name.as_deref(), Some("index-2"));
 
         // Move up
         app.select_up();
-        assert_eq!(app.selected_index, Some(0));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
 
         // Move up at top stays at top
         app.select_up();
-        assert_eq!(app.selected_index, Some(0));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
 
         // Select last
         app.select_last();
-        assert_eq!(app.selected_index, Some(2));
+        assert_eq!(app.selected_name.as_deref(), Some("index-3"));
 
         // Move down at bottom stays at bottom
         app.select_down();
-        assert_eq!(app.selected_index, Some(2));
+        assert_eq!(app.selected_name.as_deref(), Some("index-3"));
 
         // Select first
         app.select_first();
-        assert_eq!(app.selected_index, Some(0));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
     }
 
     #[test]
@@ -704,27 +745,72 @@ mod tests {
 
         // Page down
         app.select_page_down(2);
-        assert_eq!(app.selected_index, Some(2));
+        assert_eq!(app.selected_name.as_deref(), Some("index-3"));
 
         // Page up
         app.select_page_up(2);
-        assert_eq!(app.selected_index, Some(0));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
+    }
+
+    #[test]
+    fn test_selection_survives_resort() {
+        let mut app = setup_mock_app();
+        app.sort.column = SortColumn::Rate;
+        app.sort.order = SortOrder::Descending;
+        app.resort();
+
+        // Highest rate first, so the cursor starts on index-3.
+        app.select_first();
+        assert_eq!(app.selected_name.as_deref(), Some("index-3"));
+        assert_eq!(app.selected_position(), Some(0));
+
+        // index-1 overtakes it and the list re-sorts, as it would on any
+        // refresh tick. The cursor must stay on index-3, not on row 0.
+        app.indices
+            .iter_mut()
+            .find(|i| i.name == "index-1")
+            .unwrap()
+            .rate_per_sec = 99.0;
+        app.resort();
+
+        assert_eq!(app.selected_name.as_deref(), Some("index-3"));
+        assert_eq!(app.selected_position(), Some(1));
+    }
+
+    #[test]
+    fn test_selection_dropped_when_index_disappears() {
+        let mut app = setup_mock_app();
+        app.select_first();
+        assert!(app.selected_name.is_some());
+
+        app.indices
+            .retain(|i| i.name != app.selected_name.clone().unwrap());
+        app.clamp_selection();
+        assert_eq!(app.selected_name, None);
+
+        // A selection that is only filtered out is kept, so it comes back
+        // when the filter is cleared.
+        app.select_first();
+        let selected = app.selected_name.clone();
+        app.excluded_indices.insert("nothing-matches".to_string());
+        app.clamp_selection();
+        assert_eq!(app.selected_name, selected);
     }
 
     #[test]
     fn test_exclusion_impact_on_selection() {
         let mut app = setup_mock_app();
         app.select_down(); // Select index-1
-        assert_eq!(app.selected_index, Some(0));
+        assert_eq!(app.selected_name.as_deref(), Some("index-1"));
 
         // Exclude index-1
         app.toggle_exclude_selected();
         assert!(app.excluded_indices.contains("index-1"));
 
-        // Selection should move to next available or stay within bounds
-        // In our implementation, it re-evaluates filtered_indices.
-        // After excluding index-1, index-2 becomes the new index 0.
-        assert_eq!(app.selected_index, Some(0));
+        // The excluded index is gone from the list, so the cursor re-anchors
+        // to whatever row took its place.
+        assert_eq!(app.selected_name.as_deref(), Some("index-2"));
+        assert_eq!(app.selected_position(), Some(0));
         let filtered = app.filtered_indices();
         assert_eq!(filtered[0].name, "index-2");
     }

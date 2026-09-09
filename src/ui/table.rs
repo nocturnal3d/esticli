@@ -217,20 +217,9 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
             theme::BORDER
         };
 
-        let available_height = area.height.saturating_sub(3) as usize;
-
-        if let Some(selected) = self.app.selected_index {
-            let total_rows = rows.len();
-            if total_rows > available_height {
-                let center_offset = available_height / 2;
-                let ideal_offset = selected.saturating_sub(center_offset);
-                let max_offset = total_rows.saturating_sub(available_height);
-                let offset = ideal_offset.min(max_offset);
-
-                *state = (*state).with_offset(offset);
-            }
-        }
-
+        // No offset adjustment here on purpose: the incoming `state` carries
+        // the previous frame's offset (see `ui::draw`) and `Table` scrolls it
+        // just far enough to keep the selection visible.
         let table = Table::new(rows, widths)
             .header(header)
             .block(

@@ -102,39 +102,62 @@ pub fn table_page_size(terminal_area: Rect, app: &App) -> usize {
         .max(1)
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
-    let areas = compute_areas(frame.area(), app);
-    // Filter once per frame and share the result across every widget that
-    // needs it, instead of each widget re-running the (potentially jq-based)
-    // visibility filter over every index independently.
-    let summary = app.visible_summary();
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    // Read the persisted scroll offset up front and write it back at the end:
+    // everything in between borrows `app` immutably.
+    let mut table_offset = app.table_offset;
 
-    frame.render_widget(Header::new(app, summary.metrics), areas.header);
+    {
+        let areas = compute_areas(frame.area(), app);
+        // Filter once per frame and share the result across every widget that
+        // needs it, instead of each widget re-running the (potentially jq-based)
+        // visibility filter over every index independently.
+        let summary = app.visible_summary();
 
-    if let Some(area) = areas.chart {
-        frame.render_widget(RateChart::new(app), area);
+        frame.render_widget(Header::new(app, summary.metrics), areas.header);
+
+        if let Some(area) = areas.chart {
+            frame.render_widget(RateChart::new(app), area);
+        }
+        if let Some(area) = areas.health {
+            frame.render_widget(ClusterHealthWidget::new(app), area);
+        }
+
+        if let Some(area) = areas.table {
+            // Carrying the offset across frames is what makes the table scroll
+            // only when the cursor would leave the viewport: ratatui's `Table`
+            // performs that minimal "scroll into view" adjustment itself, given
+            // a stable starting offset. Deriving the offset from the selection
+            // each frame instead would pin the cursor and slide the whole list
+            // under it on every keypress.
+            let max_offset = summary.indices.len().saturating_sub(1);
+            let mut state = TableState::default()
+                .with_offset(table_offset.min(max_offset))
+                .with_selected(app.selected_position_in(&summary.indices));
+
+            frame.render_stateful_widget(
+                IndicesTable::new(app, &summary.indices),
+                area,
+                &mut state,
+            );
+            table_offset = state.offset();
+        }
+
+        frame.render_widget(
+            Footer::new(app, summary.indices.len(), app.indices.len()),
+            areas.footer,
+        );
+
+        // Details popup overlay
+        if app.details.show_popup {
+            frame.render_widget(DetailsPopup::new(app), frame.area());
+        }
+
+        // Help popup overlay
+        if app.show_help_popup {
+            frame.render_widget(HelpPopup::new(app), frame.area());
+        }
     }
-    if let Some(area) = areas.health {
-        frame.render_widget(ClusterHealthWidget::new(app), area);
-    }
 
-    if let Some(area) = areas.table {
-        let mut state = TableState::default().with_selected(app.selected_index);
-        frame.render_stateful_widget(IndicesTable::new(app, &summary.indices), area, &mut state);
-    }
-
-    frame.render_widget(
-        Footer::new(app, summary.indices.len(), app.indices.len()),
-        areas.footer,
-    );
-
-    // Details popup overlay
-    if app.details.show_popup {
-        frame.render_widget(DetailsPopup::new(app), frame.area());
-    }
-
-    // Help popup overlay
-    if app.show_help_popup {
-        frame.render_widget(HelpPopup::new(app), frame.area());
-    }
+    app.table_offset = table_offset;
 }
