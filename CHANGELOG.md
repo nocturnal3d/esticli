@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-09
+
+### Changed
+- The cluster indexing rate history is now a smooth filled area graph rather than a bar chart. The old one drew six-column-wide bars with a numeric label under each, which fit about nine samples across a typical panel and read as a row of blocks rather than a trend. The new graph plots one sample per terminal column and uses partial block glyphs (`▁▂▃▄▅▆▇█`) for eight vertical steps per row, so a six-row panel resolves 48 levels. Columns are shaded bottom-to-top through the active colormap, so `c`/`C` restyles the graph along with the tables, and history scrolls in from the right edge. A sample of zero draws a dim floor tick so an idle cluster is distinguishable from no data at all.
+- The cluster rate history keeps 300 samples instead of 60. One sample is drawn per terminal column, and 60 could not fill the graph panel on anything but a narrow terminal.
+
 ## [0.3.0] - 2026-09-09
 
 ### Added
