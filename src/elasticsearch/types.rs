@@ -199,10 +199,152 @@ pub struct ClusterHealthResponse {
     pub number_of_pending_tasks: u32,
 }
 
+// Elasticsearch _nodes/stats API response types.
+//
+// Every nested section is `#[serde(default)]` so a node that omits one (an
+// older cluster without `indices.bulk`, a node the stats call only partially
+// answered for) still deserializes, reporting zeros for what's missing rather
+// than failing the whole panel.
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodesStatsResponse {
+    #[serde(default)]
+    pub nodes: HashMap<String, NodeStatsEntry>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeStatsEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub indices: NodeIndicesStats,
+    #[serde(default)]
+    pub jvm: NodeJvmStats,
+    #[serde(default)]
+    pub process: NodeProcessStats,
+    #[serde(default)]
+    pub breakers: NodeBreakerStats,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeIndicesStats {
+    #[serde(default)]
+    pub indexing: NodeIndexingStats,
+    /// Present only on ES 7.13+; older clusters simply report zero.
+    #[serde(default)]
+    pub bulk: NodeBulkStats,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeIndexingStats {
+    #[serde(default)]
+    pub index_failed: u64,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeBulkStats {
+    #[serde(default)]
+    pub avg_size_in_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeJvmStats {
+    #[serde(default)]
+    pub mem: NodeJvmMemStats,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeJvmMemStats {
+    #[serde(default)]
+    pub heap_used_percent: u64,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeProcessStats {
+    #[serde(default)]
+    pub cpu: NodeProcessCpuStats,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeProcessCpuStats {
+    #[serde(default)]
+    pub percent: u64,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeBreakerStats {
+    #[serde(default)]
+    pub parent: NodeBreakerEntry,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NodeBreakerEntry {
+    #[serde(default)]
+    pub tripped: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_deserialize_nodes_stats() {
+        // Shaped like a real `_nodes/stats` response, including sibling fields
+        // we don't read, to confirm they're ignored rather than rejected.
+        let json_data = json!({
+            "_nodes": {"total": 2, "successful": 2, "failed": 0},
+            "cluster_name": "test-cluster",
+            "nodes": {
+                "abc123": {
+                    "name": "node-1",
+                    "host": "10.0.0.1",
+                    "indices": {
+                        "docs": {"count": 42},
+                        "indexing": {"index_total": 900, "index_failed": 7},
+                        "bulk": {"total_operations": 5, "avg_size_in_bytes": 2048}
+                    },
+                    "jvm": {"mem": {"heap_used_percent": 73, "heap_used_in_bytes": 1}},
+                    "process": {"cpu": {"percent": 41, "total_in_millis": 9}},
+                    "breakers": {
+                        "parent": {"limit_size_in_bytes": 1, "tripped": 3},
+                        "fielddata": {"tripped": 0}
+                    }
+                }
+            }
+        });
+
+        let response: NodesStatsResponse = serde_json::from_value(json_data).unwrap();
+        let node = &response.nodes["abc123"];
+        assert_eq!(node.name, "node-1");
+        assert_eq!(node.jvm.mem.heap_used_percent, 73);
+        assert_eq!(node.indices.indexing.index_failed, 7);
+        assert_eq!(node.indices.bulk.avg_size_in_bytes, 2048);
+        assert_eq!(node.process.cpu.percent, 41);
+        assert_eq!(node.breakers.parent.tripped, 3);
+    }
+
+    #[test]
+    fn test_deserialize_nodes_stats_tolerates_missing_sections() {
+        // `indices.bulk` only exists on ES 7.13+, and a node can answer
+        // partially. Missing sections must read as zero, not fail the parse.
+        let json_data = json!({
+            "nodes": {
+                "abc123": {
+                    "name": "old-node",
+                    "indices": {"indexing": {"index_failed": 2}}
+                }
+            }
+        });
+
+        let response: NodesStatsResponse = serde_json::from_value(json_data).unwrap();
+        let node = &response.nodes["abc123"];
+        assert_eq!(node.indices.indexing.index_failed, 2);
+        assert_eq!(node.indices.bulk.avg_size_in_bytes, 0);
+        assert_eq!(node.jvm.mem.heap_used_percent, 0);
+        assert_eq!(node.process.cpu.percent, 0);
+        assert_eq!(node.breakers.parent.tripped, 0);
+    }
 
     #[test]
     fn test_deserialize_cat_shard_entry() {

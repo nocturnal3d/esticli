@@ -7,10 +7,9 @@ use ratatui::{
 };
 
 use super::theme;
-use crate::app::filter::FilterMode;
 use crate::app::App;
 use crate::models::IndexRate;
-use crate::ui::types::{SortColumn, SortOrder};
+use crate::ui::types::{gradient_position, SortColumn, SortOrder};
 
 pub struct IndicesTable<'a> {
     app: &'a App,
@@ -95,15 +94,9 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
                             _ => 0.0,
                         };
 
-                        // Use logarithmic scale to spread colors more evenly
-                        let position = if max_value > 0.0 {
-                            let log_current = (1.0 + current_value).ln();
-                            let log_max = (1.0 + max_value).ln();
-                            1.0 - (log_current / log_max) as f32
-                        } else {
-                            1.0 // No gradient or zero values
-                        };
-
+                        // Shared with the nodes table so a row's color means
+                        // the same thing in both.
+                        let position = gradient_position(current_value, max_value);
                         let color = self.app.colormap.color_at(position);
                         Style::new().fg(color)
                     }
@@ -129,77 +122,11 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
             Constraint::Percentage(10),
         ];
 
-        // Create title
-        let spinner = self.app.spinner_char();
-        let duration = self.app.fetch_duration_display();
-        let spinner_color = if self.app.loading {
-            Color::Cyan
-        } else {
-            Color::Green
-        };
-
-        let mut title_spans = vec![
-            Span::raw(" Indices "),
-            Span::styled(
-                format!("{}", spinner),
-                Style::new().fg(spinner_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(format!("({})", duration), theme::TIME),
-        ];
-
-        // Add filter display
-        let filter_value = self.app.filter.input.value();
-        if self.app.filter.active || !filter_value.is_empty() {
-            title_spans.push(Span::raw(" | "));
-
-            // Make jq mode visually distinct so it's obvious the input is
-            // no longer a plain name regex.
-            let (label, label_color) = match self.app.filter.mode {
-                FilterMode::Regex => ("Filter: ", Color::Yellow),
-                FilterMode::Jq => ("jq: ", Color::Magenta),
-            };
-            title_spans.push(Span::styled(
-                label,
-                Style::new().fg(label_color).add_modifier(Modifier::BOLD),
-            ));
-
-            let filter_style = if self.app.filter.error.is_some() {
-                theme::ERROR
-            } else if self.app.filter.active {
-                Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(Color::Green)
-            };
-
-            if self.app.filter.active {
-                let cursor = self.app.filter.input.cursor();
-                let (before, after) = filter_value.split_at(cursor);
-                if !before.is_empty() {
-                    title_spans.push(Span::styled(before.to_string(), filter_style));
-                }
-                // Blink driven by our own clock (see FilterState::cursor_visible)
-                // rather than the terminal's SGR blink attribute, which most
-                // modern terminal emulators ignore. A plain space in the "off"
-                // phase keeps the column width stable so text doesn't jitter.
-                if self.app.filter.cursor_visible() {
-                    title_spans.push(Span::styled("▏", Style::new().fg(Color::White)));
-                } else {
-                    title_spans.push(Span::raw(" "));
-                }
-                if !after.is_empty() {
-                    title_spans.push(Span::styled(after.to_string(), filter_style));
-                }
-            } else {
-                title_spans.push(Span::styled(filter_value, filter_style));
-            }
-
-            // Show match count
-            title_spans.push(Span::styled(
-                format!(" ({}/{})", filtered_count, total_count),
-                theme::TIME,
-            ));
-        }
+        // Left half of the title is the shared tab strip plus the filter
+        // box; the spinner, fetch duration and row count are right-aligned by
+        // `panel_title::status`.
+        let mut title_spans = super::panel_title::tabs(self.app);
+        title_spans.extend(super::panel_title::filter_spans(self.app));
 
         if self.app.paused {
             title_spans.push(Span::styled(
@@ -210,6 +137,8 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
 
         title_spans.push(Span::raw(" "));
         let title = Line::from(title_spans);
+        let status =
+            super::panel_title::status(self.app, format!("({}/{})", filtered_count, total_count));
 
         let border_style = if self.app.paused {
             Style::new().fg(Color::Yellow)
@@ -226,7 +155,8 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style)
-                    .title(title),
+                    .title_top(title)
+                    .title_top(status),
             )
             .row_highlight_style(
                 Style::new()

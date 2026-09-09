@@ -18,6 +18,7 @@ A `top`-like TUI for real-time monitoring of Elasticsearch index ingestion rates
 - **Real-time Monitoring** - Live average indexing rates (docs/sec) for all indices
 - **Cluster Overview** - Graph showing cluster-wide average ingestion history
 - **Cluster Health** - shows global cluster metrics (shards, tasks, health etc.)
+- **Nodes View** - per-node heap, CPU, failed indexing ops, bulk sizes and circuit-breaker trips
 - **Smart Sorting** - Sort by name, document count, rate, size or health with visual gradient
 - **jq Filtering** - Filter indices using jq syntax with real-time validation
 - **Index Details** - Deep-dive popup with info on shards, ILM policy, templates and data streams
@@ -113,8 +114,8 @@ esticli --rate-samples 5
 | `j` / `↓`       | Move selection down |
 | `k` / `↑`       | Move selection up   |
 | `PgUp` / `PgDn` | Page up/down        |
-| `g` / `Home`    | Go to first index   |
-| `G` / `End`     | Go to last index    |
+| `g` / `Home`    | Go to first row     |
+| `G` / `End`     | Go to last row      |
 
 
 ### Actions
@@ -145,7 +146,8 @@ esticli --rate-samples 5
 |-------------|--------------------------------------|
 | `1`         | Toggle graph visibility              |
 | `2`         | Toggle health visibility             |
-| `3`         | Toggle indices table visibility      |
+| `3`         | Toggle main table panel visibility   |
+| `n`         | Switch panel between indices/nodes   |
 | `.`         | Toggle system indices (dot-prefixed) |
 | `+` / `-`   | Increase/decrease refresh interval   |
 | `c` / `C`   | Cycle colormap forward/backward      |
@@ -174,7 +176,7 @@ By default (`/`), the filter box is a plain **regex matched against the index na
 | `^\.`         | Name starts with "."     |
 | `idx-[0-9]+`  | Name matches pattern     |
 
-Pressing `/` again while the box is still empty ("//") switches to **jq mode**, where you type a boolean expression and it's automatically wrapped in `select(...)` for you. Available fields: `.name`, `.doc_count`, `.rate_per_sec`, `.health`, `.size_bytes`.
+Pressing `/` again while the box is still empty ("//") switches to **jq mode**, where you type a boolean expression and it's automatically wrapped in `select(...)` for you. Available fields on the indices panel: `.name`, `.doc_count`, `.rate_per_sec`, `.health`, `.size_bytes`. On the nodes panel the same box filters nodes instead — see [Nodes View](#nodes-view) for its fields.
 
 | Filter (typed, without `select(...)`) | Description              |
 |----------------------------------------|--------------------------|
@@ -187,6 +189,26 @@ Pressing `/` again while the box is still empty ("//") switches to **jq mode**, 
 
 See [jq](https://jqlang.github.io/jq/)'s syntax reference for the full expression language.
 
+
+## Nodes View
+
+Press `n` to swap the indices table for a per-node view of the cluster, and `n` again to swap back. It's sourced from `GET /_nodes/stats` and shows one row per node:
+
+| Column       | Source                           | What it tells you                                     |
+|--------------|----------------------------------|-------------------------------------------------------|
+| `CPU %`      | `process.cpu.percent`            | Process CPU usage on the node                         |
+| `Heap %`     | `jvm.mem.heap_used_percent`      | JVM heap pressure — sustained highs precede GC stalls |
+| `IdxFailed`  | `indices.indexing.index_failed`  | Rejected indexing operations since node start         |
+| `BlkAvgSize` | `indices.bulk.avg_size_in_bytes` | Average bulk request size (ES 7.13+, else `0 B`)      |
+| `BrkTripd`   | `breakers.parent.tripped`        | Parent circuit-breaker trips — non-zero means rejected requests |
+
+The panel title carries an `Indices │ Nodes` tab strip with the active view highlighted, so it's always clear which one you're looking at and that `n` switches between them.
+
+Columns are sortable with `←`/`→` (`h`/`l`) and reversible with `r`, rows are selectable with `j`/`k`, and the gradient uses the same colormap as the indices table — shaded by whichever column you're sorted on, relative to the largest value in it.
+
+The two panels keep independent sort columns and cursors, so switching back and forth doesn't lose your place. `_nodes/stats` is only requested while the nodes panel is on screen, so leaving it closed costs nothing.
+
+The filter box (`/`) works on both panels — the regex matches node names, and jq mode sees the node's fields (`.name`, `.cpu_percent`, `.heap_used_percent`, `.index_failed`, `.bulk_avg_size_bytes`, `.breaker_parent_tripped`). Exclusions (`x`) remain index-only.
 
 ## Index Details
 

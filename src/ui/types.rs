@@ -175,3 +175,64 @@ impl SortOrder {
         }
     }
 }
+
+/// Which column the nodes panel is sorted by.
+///
+/// Separate from `SortColumn` rather than a shared superset: the two tables
+/// have no columns in common beyond the name, and folding them together would
+/// mean every sort match arm handling variants that cannot occur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeSortColumn {
+    Name,
+    #[default]
+    Heap,
+    IndexFailed,
+    BulkAvgSize,
+    Cpu,
+    BreakerTripped,
+}
+
+impl NodeSortColumn {
+    // The cycle follows the on-screen column order (Node, CPU, Heap,
+    // IdxFailed, BlkAvgSize, BrkTripd) so that `l`/`h` step visually right
+    // and left. Reordering the table means reordering these too.
+    pub fn next(&self) -> Self {
+        match self {
+            NodeSortColumn::Name => NodeSortColumn::Cpu,
+            NodeSortColumn::Cpu => NodeSortColumn::Heap,
+            NodeSortColumn::Heap => NodeSortColumn::IndexFailed,
+            NodeSortColumn::IndexFailed => NodeSortColumn::BulkAvgSize,
+            NodeSortColumn::BulkAvgSize => NodeSortColumn::BreakerTripped,
+            NodeSortColumn::BreakerTripped => NodeSortColumn::Name,
+        }
+    }
+
+    pub fn prev(&self) -> Self {
+        match self {
+            NodeSortColumn::Name => NodeSortColumn::BreakerTripped,
+            NodeSortColumn::Cpu => NodeSortColumn::Name,
+            NodeSortColumn::Heap => NodeSortColumn::Cpu,
+            NodeSortColumn::IndexFailed => NodeSortColumn::Heap,
+            NodeSortColumn::BulkAvgSize => NodeSortColumn::IndexFailed,
+            NodeSortColumn::BreakerTripped => NodeSortColumn::BulkAvgSize,
+        }
+    }
+}
+
+/// Gradient position for `value` within `[0, max]`, where 0.0 is the "hot"
+/// end of the colormap. Logarithmic, so a handful of huge outliers don't
+/// flatten every other row to the same color.
+///
+/// Shared by the indices and nodes tables so a row's color means the same
+/// thing in both — see the note in CLAUDE.md about not inventing a third
+/// data-driven coloring mechanism.
+pub fn gradient_position(value: f64, max: f64) -> f32 {
+    if max <= 0.0 {
+        // Nothing to compare against: render at the cold end rather than
+        // painting every row as a maximum.
+        return 1.0;
+    }
+    let log_current = (1.0 + value.max(0.0)).ln();
+    let log_max = (1.0 + max).ln();
+    1.0 - (log_current / log_max) as f32
+}

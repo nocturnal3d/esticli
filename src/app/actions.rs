@@ -18,6 +18,7 @@ pub enum Action {
     TogglePause,
     ToggleGraph,
     ToggleIndices,
+    ToggleNodes,
     ToggleSystemIndices,
     ToggleHealth,
 

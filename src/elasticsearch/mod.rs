@@ -1,5 +1,6 @@
 pub mod client;
 pub mod details;
+pub mod nodes;
 pub mod stats;
 pub mod types;
 

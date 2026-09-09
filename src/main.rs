@@ -202,6 +202,7 @@ fn map_key_to_action(
         KeyCode::Char('1') => Some(Action::ToggleGraph),
         KeyCode::Char('2') => Some(Action::ToggleHealth),
         KeyCode::Char('3') => Some(Action::ToggleIndices),
+        KeyCode::Char('n') => Some(Action::ToggleNodes),
         KeyCode::Char('.') => Some(Action::ToggleSystemIndices),
         KeyCode::Char('c') => Some(Action::NextColormap),
         KeyCode::Char('C') => Some(Action::PrevColormap),

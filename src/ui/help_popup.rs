@@ -53,11 +53,11 @@ impl<'a> Widget for HelpPopup<'a> {
             ]),
             Line::from(vec![
                 Span::styled("  g/Home    ", Style::new().fg(Color::Green)),
-                Span::raw("Go to first index"),
+                Span::raw("Go to first row"),
             ]),
             Line::from(vec![
                 Span::styled("  G/End     ", Style::new().fg(Color::Green)),
-                Span::raw("Go to last index"),
+                Span::raw("Go to last row"),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -153,7 +153,11 @@ impl<'a> Widget for HelpPopup<'a> {
             ]),
             Line::from(vec![
                 Span::styled("  3         ", Style::new().fg(Color::Green)),
-                Span::raw("Toggle indices table visibility"),
+                Span::raw("Toggle main table panel visibility"),
+            ]),
+            Line::from(vec![
+                Span::styled("  n         ", Style::new().fg(Color::Green)),
+                Span::raw("Switch main panel between indices and nodes"),
             ]),
             Line::from(vec![
                 Span::styled("  .         ", Style::new().fg(Color::Green)),
