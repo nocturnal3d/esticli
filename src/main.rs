@@ -52,7 +52,9 @@ struct Args {
 
     // Colormap for gradient visualization
     // Options: turbo, spectral, inferno, magma, plasma, viridis, rainbow, cividis, warm, cool
-    #[arg(long, default_value = "warm")]
+    // Default is derived from `Colormap::default()` rather than spelled out
+    // again here, so the two can't drift apart.
+    #[arg(long, default_value_t = Colormap::default())]
     colormap: Colormap,
 
     // Number of samples to average for rate calculation

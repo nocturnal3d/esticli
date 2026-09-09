@@ -6,7 +6,6 @@ use std::str::FromStr;
 // Available colormaps for gradient visualization
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Colormap {
-    #[default]
     Turbo,
     Spectral,
     Inferno,
@@ -15,6 +14,7 @@ pub enum Colormap {
     Viridis,
     Rainbow,
     Cividis,
+    #[default]
     Warm,
     Cool,
 }
