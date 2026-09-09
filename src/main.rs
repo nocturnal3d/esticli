@@ -2,6 +2,8 @@ mod app;
 mod elasticsearch;
 mod error;
 mod models;
+#[cfg(test)]
+mod perf;
 mod ui;
 mod utils;
 
