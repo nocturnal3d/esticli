@@ -244,8 +244,8 @@ pub fn gradient_position(value: f64, max: f64) -> f32 {
     1.0 - (log_current / log_max) as f32
 }
 
-/// A metric cell: the formatted value, plus the snapshot trend arrow when the
-/// value has moved away from its baseline.
+/// A metric cell: the formatted value, plus the snapshot trend marker when
+/// the value has moved away from its baseline.
 ///
 /// Shared by the indices and nodes tables so a `↑` means the same thing in
 /// either panel, in the same spirit as `gradient_position` above. The arrow
@@ -257,6 +257,7 @@ pub fn metric_cell(value: String, trend: Trend) -> Cell<'static> {
     let style = match trend {
         Trend::Up => theme::TREND_UP,
         Trend::Down => theme::TREND_DOWN,
+        Trend::Reset => theme::TREND_RESET,
         Trend::Unchanged => return Cell::from(value),
     };
 

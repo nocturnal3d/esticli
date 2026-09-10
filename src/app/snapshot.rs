@@ -15,6 +15,33 @@ use chrono::{DateTime, Local};
 
 use crate::models::{IndexRate, NodeStats};
 
+/// How a metric behaves over time, which is what decides how a move away from
+/// the baseline should be read.
+///
+/// This is a property of the *column*, not of any one row, and it exists
+/// because the two kinds mean opposite things when they fall. It is the piece
+/// a configurable column list would carry alongside a label, an accessor and
+/// a formatter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MetricKind {
+    /// An instantaneous reading that moves both ways — CPU %, heap %, the
+    /// indexing rate, an average bulk size. A fall is a genuine fall, and
+    /// returning to the baseline number genuinely means "back where it
+    /// started", so the arrow clears. Doc counts and store sizes are gauges
+    /// too: they trend upwards, but deletes, merges and ILM shrink them for
+    /// real, and reporting that as anything other than a decrease would hide
+    /// it.
+    #[default]
+    Gauge,
+    /// A total that only ever accumulates, and goes backwards solely when
+    /// whatever owns it restarts — failed indexing operations and
+    /// circuit-breaker trips, both of which reset when a node does. A drop is
+    /// therefore not an improvement but a lost history, and must not be drawn
+    /// as a down arrow: `0 ↓` after a node restart reads as "failures went
+    /// away" when the truth is the opposite.
+    Counter,
+}
+
 /// Which way a metric has moved relative to its snapshot baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Trend {
@@ -22,6 +49,10 @@ pub enum Trend {
     Unchanged,
     Up,
     Down,
+    /// A counter has restarted since the snapshot: it was seen to go
+    /// backwards, so its baseline no longer refers to the same run of the
+    /// thing being counted.
+    Reset,
 }
 
 impl Trend {
@@ -37,18 +68,70 @@ impl Trend {
         match self {
             Trend::Up => " ↑",
             Trend::Down => " ↓",
+            Trend::Reset => " ⟲",
             Trend::Unchanged => "",
         }
     }
 
-    /// Compares a current reading against its baseline. Values that don't
-    /// order against each other (a NaN rate) count as unchanged rather than
-    /// picking a direction arbitrarily.
-    fn compare<T: PartialOrd>(current: T, baseline: T) -> Self {
+    /// Compares a current reading against its baseline, reading a fall
+    /// according to what kind of metric it is. Values that don't order
+    /// against each other (a NaN rate) count as unchanged rather than picking
+    /// a direction arbitrarily.
+    fn compare<T: PartialOrd>(kind: MetricKind, current: T, baseline: T) -> Self {
         match current.partial_cmp(&baseline) {
             Some(Ordering::Greater) => Trend::Up,
-            Some(Ordering::Less) => Trend::Down,
+            Some(Ordering::Less) => match kind {
+                MetricKind::Gauge => Trend::Down,
+                MetricKind::Counter => Trend::Reset,
+            },
             _ => Trend::Unchanged,
+        }
+    }
+}
+
+/// One cumulative counter's baseline, plus whether it has been seen to
+/// restart since the snapshot was taken.
+///
+/// The flag is needed because a restart is handled by re-baselining to the
+/// post-restart value: without it, the very next comparison would be "equal
+/// to baseline" and report `Unchanged`, claiming nothing had happened at the
+/// exact moment something did.
+#[derive(Debug, Clone, Copy)]
+struct CounterBaseline {
+    baseline: u64,
+    reset: bool,
+}
+
+impl CounterBaseline {
+    fn new(current: u64) -> Self {
+        Self {
+            baseline: current,
+            reset: false,
+        }
+    }
+
+    /// Reconciles the counter against a fresh reading, once per refresh tick.
+    ///
+    /// A counter that has gone backwards has restarted, so it is re-baselined
+    /// to the value it restarted from. Without that, growth after a node
+    /// restart would stay invisible until the counter climbed all the way
+    /// back past its pre-restart total — which for a node that had logged
+    /// thousands of failures could be never, hiding exactly the failures
+    /// somebody watching would most want to see.
+    fn observe(&mut self, current: u64) {
+        if current < self.baseline {
+            self.baseline = current;
+            self.reset = true;
+        }
+    }
+
+    fn trend(&self, current: u64) -> Trend {
+        match Trend::compare(MetricKind::Counter, current, self.baseline) {
+            // Sitting exactly on the baseline after a restart is not the same
+            // as never having moved, so it keeps saying so rather than
+            // silently reading as unchanged.
+            Trend::Unchanged if self.reset => Trend::Reset,
+            trend => trend,
         }
     }
 }
@@ -95,13 +178,17 @@ impl From<&IndexRate> for IndexBaseline {
 
 /// The frozen numbers for one node, kept for the same reason as
 /// `IndexBaseline`.
+///
+/// The two `MetricKind::Counter` metrics carry a little more state than the
+/// gauges do, since a counter can restart underneath the snapshot and the
+/// baseline has to follow it when it does.
 #[derive(Debug, Clone, Copy)]
 struct NodeBaseline {
     cpu_percent: u64,
     heap_used_percent: u64,
-    index_failed: u64,
+    index_failed: CounterBaseline,
     bulk_avg_size_bytes: u64,
-    breaker_parent_tripped: u64,
+    breaker_parent_tripped: CounterBaseline,
 }
 
 impl From<&NodeStats> for NodeBaseline {
@@ -109,9 +196,9 @@ impl From<&NodeStats> for NodeBaseline {
         Self {
             cpu_percent: node.cpu_percent,
             heap_used_percent: node.heap_used_percent,
-            index_failed: node.index_failed,
+            index_failed: CounterBaseline::new(node.index_failed),
             bulk_avg_size_bytes: node.bulk_avg_size_bytes,
-            breaker_parent_tripped: node.breaker_parent_tripped,
+            breaker_parent_tripped: CounterBaseline::new(node.breaker_parent_tripped),
         }
     }
 }
@@ -199,9 +286,21 @@ impl SnapshotState {
             return;
         };
         for node in nodes {
-            if !self.nodes.contains_key(&node.name) {
-                self.nodes
-                    .insert(node.name.clone(), NodeBaseline::from(node));
+            match self.nodes.get_mut(&node.name) {
+                // An existing baseline keeps its gauges frozen, but its
+                // counters have to be followed: if the node restarted, they
+                // are now counting from zero and the old totals no longer
+                // refer to the same run.
+                Some(baseline) => {
+                    baseline.index_failed.observe(node.index_failed);
+                    baseline
+                        .breaker_parent_tripped
+                        .observe(node.breaker_parent_tripped);
+                }
+                None => {
+                    self.nodes
+                        .insert(node.name.clone(), NodeBaseline::from(node));
+                }
             }
         }
         let present: HashSet<&str> = nodes.iter().map(|node| node.name.as_str()).collect();
@@ -216,10 +315,14 @@ impl SnapshotState {
             return IndexTrends::default();
         };
 
+        // Every indices-panel metric is a gauge. Doc count and size trend
+        // upwards but genuinely shrink — deletes, segment merges, ILM — and a
+        // real decrease there is worth seeing rather than being explained
+        // away as a counter restart.
         IndexTrends {
-            doc_count: Trend::compare(index.doc_count, baseline.doc_count),
-            rate: Trend::compare(index.rate_per_sec, baseline.rate_per_sec),
-            size: Trend::compare(index.size_bytes, baseline.size_bytes),
+            doc_count: Trend::compare(MetricKind::Gauge, index.doc_count, baseline.doc_count),
+            rate: Trend::compare(MetricKind::Gauge, index.rate_per_sec, baseline.rate_per_sec),
+            size: Trend::compare(MetricKind::Gauge, index.size_bytes, baseline.size_bytes),
         }
     }
 
@@ -229,15 +332,25 @@ impl SnapshotState {
             return NodeTrends::default();
         };
 
+        // CPU, heap and the average bulk size are instantaneous readings;
+        // failed indexing operations and breaker trips are cumulative and
+        // reset with the node, so they go through `CounterBaseline`.
         NodeTrends {
-            cpu: Trend::compare(node.cpu_percent, baseline.cpu_percent),
-            heap: Trend::compare(node.heap_used_percent, baseline.heap_used_percent),
-            index_failed: Trend::compare(node.index_failed, baseline.index_failed),
-            bulk_avg_size: Trend::compare(node.bulk_avg_size_bytes, baseline.bulk_avg_size_bytes),
-            breaker_tripped: Trend::compare(
-                node.breaker_parent_tripped,
-                baseline.breaker_parent_tripped,
+            cpu: Trend::compare(MetricKind::Gauge, node.cpu_percent, baseline.cpu_percent),
+            heap: Trend::compare(
+                MetricKind::Gauge,
+                node.heap_used_percent,
+                baseline.heap_used_percent,
             ),
+            index_failed: baseline.index_failed.trend(node.index_failed),
+            bulk_avg_size: Trend::compare(
+                MetricKind::Gauge,
+                node.bulk_avg_size_bytes,
+                baseline.bulk_avg_size_bytes,
+            ),
+            breaker_tripped: baseline
+                .breaker_parent_tripped
+                .trend(node.breaker_parent_tripped),
         }
     }
 }
@@ -370,6 +483,93 @@ mod tests {
         let trends = snapshot.node_trends(&node("node-1", 55, 4));
         assert_eq!(trends.cpu, Trend::Up);
         assert_eq!(trends.index_failed, Trend::Up);
+    }
+
+    #[test]
+    fn test_a_restarting_counter_reads_as_a_reset_not_an_improvement() {
+        // The case this whole distinction exists for: a node restarts, its
+        // failure counter goes back to zero, and the old behaviour drew that
+        // as `0 ↓` — indistinguishable from failures genuinely falling away.
+        let mut snapshot = SnapshotState::default();
+        snapshot.capture(&[], &[node("node-1", 10, 500)]);
+
+        // Accumulating normally.
+        let tick = node("node-1", 10, 530);
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+        assert_eq!(snapshot.node_trends(&tick).index_failed, Trend::Up);
+
+        // Restart: the counter falls, which a counter cannot genuinely do.
+        let tick = node("node-1", 10, 0);
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+        assert_eq!(snapshot.node_trends(&tick).index_failed, Trend::Reset);
+        assert_eq!(Trend::Reset.arrow(), " ⟲");
+
+        // Re-baselined to the restart, so new failures show immediately
+        // rather than staying hidden until the count passes 500 again.
+        let tick = node("node-1", 10, 14);
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+        assert_eq!(snapshot.node_trends(&tick).index_failed, Trend::Up);
+    }
+
+    #[test]
+    fn test_a_gauge_falling_is_still_a_plain_decrease() {
+        // Counters and gauges must part company only on the way down: CPU is
+        // an instantaneous reading, so a fall is a fall.
+        let mut snapshot = SnapshotState::default();
+        snapshot.capture(&[], &[node("node-1", 80, 0)]);
+
+        let tick = node("node-1", 20, 0);
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+        assert_eq!(snapshot.node_trends(&tick).cpu, Trend::Down);
+
+        // Doc count and size are gauges too: they trend up, but deletes and
+        // merges shrink them for real and that must not read as a reset.
+        snapshot.capture(&[index("idx", 1000, 1.0, 8192)], &[]);
+        let trends = snapshot.index_trends(&index("idx", 400, 1.0, 2048));
+        assert_eq!(trends.doc_count, Trend::Down);
+        assert_eq!(trends.size, Trend::Down);
+    }
+
+    #[test]
+    fn test_a_reset_counter_sitting_on_its_new_baseline_still_says_so() {
+        // After a restart the counter equals its re-baselined value, and
+        // "unchanged" would claim nothing had happened at the exact moment
+        // something did.
+        let mut snapshot = SnapshotState::default();
+        snapshot.capture(&[], &[node("node-1", 10, 42)]);
+
+        let tick = node("node-1", 10, 0);
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+        assert_eq!(snapshot.node_trends(&tick).index_failed, Trend::Reset);
+
+        // Still quiet several ticks later: it stays flagged for the life of
+        // the snapshot rather than quietly reverting to "unchanged".
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+        assert_eq!(snapshot.node_trends(&tick).index_failed, Trend::Reset);
+
+        // A fresh snapshot starts clean.
+        snapshot.capture(&[], &[node("node-1", 10, 0)]);
+        assert_eq!(
+            snapshot.node_trends(&node("node-1", 10, 0)).index_failed,
+            Trend::Unchanged
+        );
+    }
+
+    #[test]
+    fn test_both_node_counters_reset_independently() {
+        let mut snapshot = SnapshotState::default();
+        let mut base = node("node-1", 10, 500);
+        base.breaker_parent_tripped = 7;
+        snapshot.capture(&[], &[base]);
+
+        // Only the breaker counter falls; the failure counter keeps climbing.
+        let mut tick = node("node-1", 10, 600);
+        tick.breaker_parent_tripped = 0;
+        snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
+
+        let trends = snapshot.node_trends(&tick);
+        assert_eq!(trends.index_failed, Trend::Up);
+        assert_eq!(trends.breaker_tripped, Trend::Reset);
     }
 
     #[test]
