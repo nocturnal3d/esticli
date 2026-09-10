@@ -14,3 +14,7 @@ pub const BORDER: Style = Style::new().fg(Color::DarkGray);
 pub const TREND_UP: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 pub const TREND_DOWN: Style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
 pub const SNAPSHOT: Style = Style::new().fg(Color::Magenta);
+// A counter that restarted under the snapshot. Yellow rather than red: it is
+// something to notice, not a failure in itself — the failure it may point at
+// is the node restart behind it.
+pub const TREND_RESET: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);

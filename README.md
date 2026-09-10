@@ -196,15 +196,24 @@ See [jq](https://jqlang.github.io/jq/)'s syntax reference for the full expressio
 
 Press `s` to freeze every metric in both panels at that moment. From then on each refresh is compared against that frozen baseline — not against the previous tick — and any metric that has moved carries an arrow:
 
-| Marker | Meaning                                  |
-|--------|------------------------------------------|
-| `↑`    | Higher than it was at the snapshot       |
-| `↓`    | Lower than it was at the snapshot        |
-| (none) | Exactly where it was at the snapshot     |
+| Marker | Meaning                                          |
+|--------|--------------------------------------------------|
+| `↑`    | Higher than it was at the snapshot               |
+| `↓`    | Lower than it was at the snapshot                |
+| `⟲`    | A cumulative counter restarted (see below)       |
+| (none) | Exactly where it was at the snapshot             |
 
 This answers "what has actually changed while I've been watching?" — how much an index has grown, whether a node's heap has crept up, whether a failed-operation counter moved at all — without having to remember the numbers yourself. Because the baseline is fixed rather than rolling, a value that spikes and then partially falls back still reads as `↑` until it drops below where it started.
 
 The arrows are green for up and red for down. That is direction, not judgement: a node whose `IdxFailed` count has climbed gets a green arrow like anything else that went up.
+
+A metric with no arrow is exactly where it was — **including one that moved and came back**. Because the comparison is against the snapshot rather than against the previous refresh, an indexing rate that bursts and settles back to zero, or a heap percentage that returns to the number it started on, drops its arrow again. That is the marker doing its job, not a glitch.
+
+### Counters vs. gauges
+
+`IdxFailed` and `BrkTripd` are cumulative counters: they only ever climb, and they go backwards solely when the node restarts. They therefore never show a down arrow. A fall there means the counter restarted, which is shown as `⟲` and re-baselined to the new value — so failures occurring after a restart show up immediately, instead of staying invisible until the count climbed back past its pre-restart total.
+
+Everything else is a gauge, compared in both directions. That includes `Docs Count` and `Size`, which trend upwards but genuinely shrink through deletes, segment merges and ILM — a real decrease there is worth seeing rather than being explained away as a restart.
 
 Both panels are captured by a single press, so you can snapshot on the indices view, press `n`, and see node movement from the same moment. The footer shows the time the baseline was taken (`⇅ 14:03:21`) for as long as it is active. Pressing `s` again re-baselines from now; `S` drops the baseline and the arrows with it.
 

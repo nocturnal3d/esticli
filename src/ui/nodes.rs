@@ -180,3 +180,95 @@ impl<'a> StatefulWidget for NodesTable<'a> {
         StatefulWidget::render(table, area, buf, state);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elasticsearch::AuthConfig;
+    use crate::ui::types::Colormap;
+    use ratatui::buffer::Buffer;
+
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    };
+
+    fn node(name: &str, cpu_percent: u64, index_failed: u64) -> NodeStats {
+        NodeStats {
+            name: name.to_string(),
+            cpu_percent,
+            index_failed,
+            ..NodeStats::default()
+        }
+    }
+
+    fn app() -> App {
+        App::new(
+            "http://localhost:9200".to_string(),
+            AuthConfig::None,
+            false,
+            None,
+            5,
+            Colormap::default(),
+            10,
+        )
+        .unwrap()
+    }
+
+    fn rendered(app: &App) -> String {
+        let visible = app.visible_nodes();
+        let mut buf = Buffer::empty(AREA);
+        let mut state = TableState::default();
+        NodesTable::new(app, &visible, 0).render(AREA, &mut buf, &mut state);
+
+        (0..AREA.height)
+            .map(|y| {
+                (0..AREA.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_a_restarted_counter_draws_a_reset_marker_not_a_down_arrow() {
+        let mut app = app();
+        app.nodes = vec![node("node-a", 50, 500)];
+        app.take_snapshot();
+
+        // The node restarts: CPU happens to fall as well, so this also pins
+        // that the two kinds are drawn differently in the same row.
+        app.nodes = vec![node("node-a", 20, 0)];
+        app.snapshot.observe(&[], Some(&app.nodes));
+
+        let out = rendered(&app);
+        assert!(out.contains('⟲'), "missing reset marker:\n{}", out);
+        // The gauge still falls normally...
+        assert!(out.contains('↓'), "missing down arrow for CPU:\n{}", out);
+        // ...and the counter never draws one.
+        assert_eq!(out.matches('↓').count(), 1, "{}", out);
+        assert_eq!(out.matches('⟲').count(), 1, "{}", out);
+    }
+
+    #[test]
+    fn test_counter_growth_after_a_restart_shows_as_up() {
+        let mut app = app();
+        app.nodes = vec![node("node-a", 50, 500)];
+        app.take_snapshot();
+
+        app.nodes = vec![node("node-a", 50, 0)];
+        app.snapshot.observe(&[], Some(&app.nodes));
+
+        // 14 new failures since the restart, far below the pre-restart 500 —
+        // these must be visible rather than hidden until the count passes it.
+        app.nodes = vec![node("node-a", 50, 14)];
+        app.snapshot.observe(&[], Some(&app.nodes));
+
+        let out = rendered(&app);
+        assert!(out.contains('↑'), "missing up arrow:\n{}", out);
+        assert!(!out.contains('⟲'), "stale reset marker:\n{}", out);
+    }
+}
