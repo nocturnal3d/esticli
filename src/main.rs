@@ -196,6 +196,8 @@ fn map_key_to_action(
         KeyCode::Enter => Some(Action::ShowDetails),
         KeyCode::Char('x') => Some(Action::ToggleExclude),
         KeyCode::Char('X') => Some(Action::ClearExclusions),
+        KeyCode::Char('s') => Some(Action::TakeSnapshot),
+        KeyCode::Char('S') => Some(Action::ClearSnapshot),
         KeyCode::Right | KeyCode::Char('l') => Some(Action::NextColumn),
         KeyCode::Left | KeyCode::Char('h') => Some(Action::PrevColumn),
         KeyCode::Char('r') => Some(Action::ToggleSortOrder),

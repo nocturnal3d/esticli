@@ -94,6 +94,24 @@ fn perf_indices_panel() {
     });
     drop(summary);
 
+    // A snapshot adds a hash lookup per on-screen row to the render, and one
+    // reconciliation pass over the whole list per refresh tick. Both need to
+    // stay off the critical path at cluster scale.
+    println!("\nwith an active snapshot baseline:");
+    app.take_snapshot();
+    time("snapshot.observe() [per refresh tick]", 50, || {
+        app.snapshot.observe(&app.indices, None);
+    });
+
+    let summary = app.visible_summary();
+    time("IndicesTable::render() [snapshot]", 200, || {
+        let mut buf = Buffer::empty(TERMINAL);
+        let mut state = TableState::default().with_offset(0).with_selected(Some(0));
+        IndicesTable::new(&app, &summary.indices, 0).render(TERMINAL, &mut buf, &mut state);
+    });
+    drop(summary);
+    app.snapshot.clear();
+
     println!("\nwith an active jq filter:");
     app.filter.toggle_mode();
     app.filter.input = app

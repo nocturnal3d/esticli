@@ -9,7 +9,7 @@ use ratatui::{
 use super::theme;
 use crate::app::App;
 use crate::models::NodeStats;
-use crate::ui::types::{gradient_position, NodeSortColumn, SortOrder};
+use crate::ui::types::{gradient_position, metric_cell, NodeSortColumn, SortOrder};
 
 pub struct NodesTable<'a> {
     app: &'a App,
@@ -105,13 +105,17 @@ impl<'a> StatefulWidget for NodesTable<'a> {
                     None => Style::new(),
                 };
 
+                // Same snapshot comparison the indices table does, against
+                // the node half of the same baseline.
+                let trends = self.app.snapshot.node_trends(node);
+
                 let cells = [
                     Cell::from(node.name.clone()),
-                    Cell::from(format!("{}%", node.cpu_percent)),
-                    Cell::from(format!("{}%", node.heap_used_percent)),
-                    Cell::from(node.index_failed_human()),
-                    Cell::from(node.bulk_avg_size_human()),
-                    Cell::from(node.breaker_tripped_human()),
+                    metric_cell(format!("{}%", node.cpu_percent), trends.cpu),
+                    metric_cell(format!("{}%", node.heap_used_percent), trends.heap),
+                    metric_cell(node.index_failed_human(), trends.index_failed),
+                    metric_cell(node.bulk_avg_size_human(), trends.bulk_avg_size),
+                    metric_cell(node.breaker_tripped_human(), trends.breaker_tripped),
                 ];
 
                 Row::new(cells).style(style)

@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod details;
 pub mod filter;
+pub mod snapshot;
 pub mod sort;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -17,6 +18,7 @@ use tokio::sync::{mpsc, Mutex};
 use self::actions::Action;
 use self::details::DetailsState;
 use self::filter::FilterState;
+use self::snapshot::SnapshotState;
 use self::sort::{NodeSortState, SortState};
 
 // One history sample is drawn per terminal column, so this needs to comfortably
@@ -116,6 +118,9 @@ pub struct App {
     pub node_sort: NodeSortState,
     pub filter: FilterState,
     pub details: DetailsState,
+    /// Frozen baseline the tables mark their metrics against. Inert until
+    /// `s` is pressed.
+    pub snapshot: SnapshotState,
 
     index_rate_history: HashMap<String, VecDeque<f64>>,
     es_client: Arc<Mutex<EsClient>>,
@@ -173,6 +178,7 @@ impl App {
             node_sort: NodeSortState::default(),
             filter: FilterState::default(),
             details: DetailsState::new(),
+            snapshot: SnapshotState::default(),
 
             index_rate_history: HashMap::new(),
             es_client: Arc::new(Mutex::new(es_client)),
@@ -299,11 +305,20 @@ impl App {
 
                         // `None` means the request was skipped because the
                         // panel is hidden, so the last known nodes stay put.
+                        let nodes_fetched = nodes.is_some();
                         if let Some(mut nodes) = nodes {
                             self.node_sort.sort(&mut nodes);
                             self.nodes = nodes;
                             self.clamp_node_selection();
                         }
+
+                        // Reconcile the snapshot baseline with what the
+                        // cluster now reports: rows that have appeared since
+                        // adopt this reading, rows that have gone are dropped.
+                        // Node stats are only offered when they were actually
+                        // requested this tick.
+                        let observed_nodes = nodes_fetched.then_some(self.nodes.as_slice());
+                        self.snapshot.observe(&self.indices, observed_nodes);
 
                         // Prune index_rate_history for indices that no longer exist
                         let current_index_names: HashSet<String> =
@@ -784,6 +799,22 @@ impl App {
         self.excluded_indices.len()
     }
 
+    /// Freezes the readings currently on screen as the baseline every later
+    /// tick is compared against. Pressing it again re-baselines from now.
+    ///
+    /// Both panels are captured at once, not just the one on screen, so
+    /// switching views after taking a snapshot shows movement from the same
+    /// moment. The nodes half is empty if that panel has never been focused
+    /// (`_nodes/stats` isn't requested until it is); `SnapshotState::observe`
+    /// fills it in on the first fetch that does happen.
+    pub fn take_snapshot(&mut self) {
+        self.snapshot.capture(&self.indices, &self.nodes);
+    }
+
+    pub fn clear_snapshot(&mut self) {
+        self.snapshot.clear();
+    }
+
     pub fn toggle_help_popup(&mut self) {
         self.show_help_popup = !self.show_help_popup;
         if self.show_help_popup {
@@ -827,6 +858,8 @@ impl App {
             Action::ToggleSystemIndices => self.toggle_system_indices(),
             Action::ShowDetails => self.show_index_details(),
             Action::ToggleExclude => self.toggle_exclude_selected(),
+            Action::TakeSnapshot => self.take_snapshot(),
+            Action::ClearSnapshot => self.clear_snapshot(),
             Action::ClearExclusions => self.clear_exclusions(),
             Action::IncreaseRefreshRate => self.increase_refresh_rate(),
             Action::DecreaseRefreshRate => self.decrease_refresh_rate(),
@@ -1034,6 +1067,78 @@ mod tests {
         app.toggle_nodes();
         assert_eq!(app.main_panel, MainPanel::Indices);
         assert!(app.show_main_panel);
+    }
+
+    #[test]
+    fn test_snapshot_marks_movement_in_both_panels_from_one_baseline() {
+        let mut app = setup_mock_app();
+        app.nodes = vec![mock_node("node-a", 10), mock_node("node-b", 20)];
+
+        // Nothing is marked until a baseline exists.
+        assert!(!app.snapshot.is_active());
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[0]).doc_count,
+            snapshot::Trend::Unchanged
+        );
+
+        app.handle_action(Action::TakeSnapshot);
+        assert!(app.snapshot.is_active());
+        assert!(app.snapshot.taken_at().is_some());
+
+        // One index climbs, another falls; the untouched one stays unmarked.
+        app.indices[0].doc_count = 500;
+        app.indices[1].doc_count = 1;
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[0]).doc_count,
+            snapshot::Trend::Up
+        );
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[1]).doc_count,
+            snapshot::Trend::Down
+        );
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[2]).doc_count,
+            snapshot::Trend::Unchanged
+        );
+
+        // The same press captured the nodes panel, so switching to it after
+        // the fact still shows movement from that same moment.
+        app.nodes[0].heap_used_percent = 90;
+        assert_eq!(
+            app.snapshot.node_trends(&app.nodes[0]).heap,
+            snapshot::Trend::Up
+        );
+        assert_eq!(
+            app.snapshot.node_trends(&app.nodes[1]).heap,
+            snapshot::Trend::Unchanged
+        );
+
+        app.handle_action(Action::ClearSnapshot);
+        assert!(!app.snapshot.is_active());
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[0]).doc_count,
+            snapshot::Trend::Unchanged
+        );
+    }
+
+    #[test]
+    fn test_retaking_a_snapshot_rebaselines_from_now() {
+        let mut app = setup_mock_app();
+        app.handle_action(Action::TakeSnapshot);
+
+        app.indices[0].doc_count = 500;
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[0]).doc_count,
+            snapshot::Trend::Up
+        );
+
+        // Pressing `s` again replaces the baseline rather than stacking, so
+        // the arrow clears until the value moves again.
+        app.handle_action(Action::TakeSnapshot);
+        assert_eq!(
+            app.snapshot.index_trends(&app.indices[0]).doc_count,
+            snapshot::Trend::Unchanged
+        );
     }
 
     #[test]

@@ -125,6 +125,8 @@ esticli --rate-samples 5
 | `Enter`     | Show index details                        |
 | `x`         | Exclude/include selected index from stats |
 | `X`         | Clear all exclusions                      |
+| `s`         | Snapshot current values as a baseline     |
+| `S`         | Clear the snapshot baseline               |
 | `/`         | Enter filter mode (regex on index name)   |
 | `//`        | Enter filter mode as jq (see below)       |
 | `Space`     | Pause/resume refresh                      |
@@ -188,6 +190,25 @@ Pressing `/` again while the box is still empty ("//") switches to **jq mode**, 
 | `.doc_count > 100 and .health == "green"` | Combined conditions |
 
 See [jq](https://jqlang.github.io/jq/)'s syntax reference for the full expression language.
+
+
+## Snapshots
+
+Press `s` to freeze every metric in both panels at that moment. From then on each refresh is compared against that frozen baseline — not against the previous tick — and any metric that has moved carries an arrow:
+
+| Marker | Meaning                                  |
+|--------|------------------------------------------|
+| `↑`    | Higher than it was at the snapshot       |
+| `↓`    | Lower than it was at the snapshot        |
+| (none) | Exactly where it was at the snapshot     |
+
+This answers "what has actually changed while I've been watching?" — how much an index has grown, whether a node's heap has crept up, whether a failed-operation counter moved at all — without having to remember the numbers yourself. Because the baseline is fixed rather than rolling, a value that spikes and then partially falls back still reads as `↑` until it drops below where it started.
+
+The arrows are green for up and red for down. That is direction, not judgement: a node whose `IdxFailed` count has climbed gets a green arrow like anything else that went up.
+
+Both panels are captured by a single press, so you can snapshot on the indices view, press `n`, and see node movement from the same moment. The footer shows the time the baseline was taken (`⇅ 14:03:21`) for as long as it is active. Pressing `s` again re-baselines from now; `S` drops the baseline and the arrows with it.
+
+Rows that appear after the snapshot take their first observed reading as their own baseline, so they start unmarked and drift from there — there's no honest way to compare an index against a moment it didn't exist in. The same applies to nodes when a snapshot is taken before the nodes panel has ever been opened, since `_nodes/stats` isn't requested until then.
 
 
 ## Nodes View

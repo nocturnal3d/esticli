@@ -1,7 +1,14 @@
 use colorgrad::{preset, Gradient};
-use ratatui::style::Color;
+use ratatui::{
+    style::Color,
+    text::{Line, Span},
+    widgets::Cell,
+};
 use std::fmt;
 use std::str::FromStr;
+
+use super::theme;
+use crate::app::snapshot::Trend;
 
 // Available colormaps for gradient visualization
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -235,4 +242,26 @@ pub fn gradient_position(value: f64, max: f64) -> f32 {
     let log_current = (1.0 + value.max(0.0)).ln();
     let log_max = (1.0 + max).ln();
     1.0 - (log_current / log_max) as f32
+}
+
+/// A metric cell: the formatted value, plus the snapshot trend arrow when the
+/// value has moved away from its baseline.
+///
+/// Shared by the indices and nodes tables so a `↑` means the same thing in
+/// either panel, in the same spirit as `gradient_position` above. The arrow
+/// gets its own color rather than inheriting the row's gradient — that
+/// gradient encodes magnitude, and overloading it with direction would make
+/// neither readable. An unchanged metric renders as bare text with no
+/// trailing space, so a table with no snapshot looks untouched.
+pub fn metric_cell(value: String, trend: Trend) -> Cell<'static> {
+    let style = match trend {
+        Trend::Up => theme::TREND_UP,
+        Trend::Down => theme::TREND_DOWN,
+        Trend::Unchanged => return Cell::from(value),
+    };
+
+    Cell::from(Line::from(vec![
+        Span::raw(value),
+        Span::styled(trend.arrow(), style),
+    ]))
 }
