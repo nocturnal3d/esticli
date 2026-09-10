@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
+### Added
+- Snapshots: `s` freezes every metric in both the indices and nodes panels at that moment, and every subsequent refresh is compared against that frozen baseline. Metrics that have moved carry an arrow — `↑` higher than the snapshot, `↓` lower, nothing at all when the value is exactly where it was. `s` again re-baselines from now, `S` drops the baseline. Previously the tables showed only the current reading, so answering "how much has this index actually grown while I've been watching?" meant writing the numbers down first.
+  - The baseline is fixed, not rolling: this compares against the snapshot, not against the previous tick, so a value that spikes and then partially falls back still reads as `↑` until it drops below where it started.
+  - Marked columns are the numeric ones — `Docs Count`, `Rate (/s)` and `Size` on the indices panel, and all five metrics on the nodes panel. The index name and health are left alone: neither is a magnitude, so "increased" isn't something either can do.
+  - The arrows are `↑`/`↓` rather than the `▲`/`▼` a column header shows for sort direction, since the two mean different things and appear a row apart. Green for up and red for down is direction, not judgement — a node whose `IdxFailed` count has climbed gets a green arrow like anything else that went up.
+  - One press captures both panels, so you can snapshot on the indices view, press `n`, and see node movement from the same moment. When a snapshot is taken before the nodes panel has ever been opened there are no node readings to capture — `_nodes/stats` isn't requested until that panel is on screen — so the node half of the baseline is filled in by the first fetch that does happen.
+  - Rows that appear after the snapshot adopt their first observed reading as their baseline and so start unmarked; rows that disappear are dropped from it. There is no honest way to compare an index against a moment it didn't exist in.
+  - The footer shows the time the baseline was taken (`⇅ 14:03:21`) while one is active.
+  - Rendering is unaffected at cluster scale: the tables do one hash lookup per on-screen row, and `IndicesTable::render()` measures the same 0.24ms at 50,000 indices with a snapshot as without. Reconciling the baseline with the cluster costs ~2.5ms at that size, and runs once per refresh tick rather than on the ~20x/sec redraw.
+
+### Changed
+- The indices table's metric columns are fixed-width instead of percentages, matching the nodes table. Each has to fit its header plus a sort arrow and its value plus a trend arrow, and at 80 columns the old percentages truncated `Size` values such as `1023.9 KiB` even before the arrows were added.
+
 ## [0.4.1] - 2026-09-09
 
 ### Changed

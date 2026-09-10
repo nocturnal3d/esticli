@@ -98,6 +98,17 @@ impl<'a> Widget for Footer<'a> {
                 Style::new().fg(Color::Magenta),
             ));
 
+            // Snapshot baseline, with the moment it was taken — the trend
+            // arrows in the table are meaningless without knowing what they
+            // are counting from.
+            if let Some(taken_at) = self.app.snapshot.taken_at() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    format!("⇅ {}", taken_at.format("%H:%M:%S")),
+                    theme::SNAPSHOT,
+                ));
+            }
+
             // Excluded count
             let excluded = self.app.excluded_count();
             if excluded > 0 {

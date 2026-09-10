@@ -26,6 +26,10 @@ pub enum Action {
     ShowDetails,
     ToggleExclude,
     ClearExclusions,
+    /// Freeze the current readings as the baseline every later tick is
+    /// compared against; re-taking replaces the previous baseline.
+    TakeSnapshot,
+    ClearSnapshot,
 
     // Settings
     IncreaseRefreshRate,

@@ -9,7 +9,7 @@ use ratatui::{
 use super::theme;
 use crate::app::App;
 use crate::models::IndexRate;
-use crate::ui::types::{gradient_position, SortColumn, SortOrder};
+use crate::ui::types::{gradient_position, metric_cell, SortColumn, SortOrder};
 
 pub struct IndicesTable<'a> {
     app: &'a App,
@@ -121,11 +121,17 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
                     }
                 };
 
+                // Movement away from the snapshot baseline, if one has been
+                // taken. Looked up per on-screen row rather than precomputed
+                // for the whole list, for the same reason the rows
+                // themselves are: only the window is ever built.
+                let trends = self.app.snapshot.index_trends(index);
+
                 let cells = [
                     Cell::from(index.name.clone()),
-                    Cell::from(index.doc_count_human()),
-                    Cell::from(index.rate_human()),
-                    Cell::from(index.size_human()),
+                    metric_cell(index.doc_count_human(), trends.doc_count),
+                    metric_cell(index.rate_human(), trends.rate),
+                    metric_cell(index.size_human(), trends.size),
                     Cell::from(index.health.clone()),
                 ];
 
@@ -133,12 +139,16 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
             })
             .collect();
 
+        // Fixed widths for the metric columns, as in the nodes table: each
+        // has to fit its header plus a sort arrow *and* a value plus a
+        // snapshot trend arrow, and percentages that look generous silently
+        // truncate both at 80 columns. The name takes whatever is left.
         let widths = [
-            Constraint::Percentage(60),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
+            Constraint::Fill(1),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(13),
+            Constraint::Length(9),
         ];
 
         // Left half of the title is the shared tab strip plus the filter
@@ -184,5 +194,88 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
             );
 
         StatefulWidget::render(table, area, buf, state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::elasticsearch::AuthConfig;
+    use crate::ui::types::Colormap;
+    use ratatui::buffer::Buffer;
+
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    };
+
+    fn app_with(doc_counts: [u64; 2]) -> App {
+        let mut app = App::new(
+            "http://localhost:9200".to_string(),
+            AuthConfig::None,
+            false,
+            None,
+            5,
+            Colormap::default(),
+            10,
+        )
+        .unwrap();
+
+        app.indices = doc_counts
+            .iter()
+            .enumerate()
+            .map(|(i, doc_count)| IndexRate {
+                name: format!("index-{}", i),
+                doc_count: *doc_count,
+                rate_per_sec: 1.0,
+                size_bytes: 1024,
+                health: "green".to_string(),
+            })
+            .collect();
+        app
+    }
+
+    fn rendered(app: &App) -> String {
+        let visible = app.filtered_indices();
+        let mut buf = Buffer::empty(AREA);
+        let mut state = TableState::default();
+        IndicesTable::new(app, &visible, 0).render(AREA, &mut buf, &mut state);
+
+        (0..AREA.height)
+            .map(|y| {
+                (0..AREA.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_trend_arrows_reach_the_screen_and_only_where_earned() {
+        let mut app = app_with([100, 100]);
+
+        // Without a snapshot the table renders exactly as it always did.
+        let before = rendered(&app);
+        assert!(!before.contains('↑'), "unexpected arrow:\n{}", before);
+        assert!(!before.contains('↓'), "unexpected arrow:\n{}", before);
+
+        app.take_snapshot();
+        app.indices[0].doc_count = 500;
+        app.indices[1].doc_count = 50;
+
+        let after = rendered(&app);
+        // One row went up, the other down, and the columns are wide enough
+        // that neither arrow gets truncated away at 80 columns.
+        assert!(after.contains('↑'), "missing up arrow:\n{}", after);
+        assert!(after.contains('↓'), "missing down arrow:\n{}", after);
+
+        // The rate and size held still, so those cells stay bare — an
+        // unchanged metric must not grow a placeholder.
+        assert_eq!(after.matches('↑').count(), 1, "{}", after);
+        assert_eq!(after.matches('↓').count(), 1, "{}", after);
     }
 }
