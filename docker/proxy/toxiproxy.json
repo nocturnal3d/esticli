@@ -1,0 +1,8 @@
+[
+  {
+    "name": "es",
+    "listen": "0.0.0.0:9290",
+    "upstream": "es-single:9200",
+    "enabled": true
+  }
+]

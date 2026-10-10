@@ -1,0 +1,269 @@
+# EstiCLI local Elasticsearch test environment.
+#
+# Every service sits behind a Compose profile, so nothing starts unless asked:
+#
+#   docker compose -f docker/compose.yml --profile single up -d
+#   docker/esenv.sh up single            # same, plus waits for yellow/green
+#
+# Profiles (see docker/README.md for the memory budget and which can coexist):
+#   single   one 9.x node, security off           http://localhost:9200
+#   cluster  three nodes es01..es03, security off  http://localhost:9201 (-> es01)
+#   secure   one node, security + HTTPS            https://localhost:9202
+#   legacy   one 7.17 node, security off           http://localhost:9207
+#   proxy    nginx path prefix + toxiproxy in front of "single"
+#            http://localhost:9280/es/  and  http://localhost:9290 (toxics API :8474)
+#
+# All ports bind to 127.0.0.1 only: these nodes run without security.
+#
+# Tunables (environment or docker/.env):
+#   ES_VERSION              image tag for single/cluster/secure   (9.5.5)
+#   LEGACY_ES_VERSION       image tag for legacy                  (7.17.28)
+#   ES_HEAP                 single heap                           (2g)
+#   ES_CLUSTER_HEAP         heap of each cluster node             (1g)
+#   ES_SECURE_HEAP          secure heap                           (1g)
+#   ES_LEGACY_HEAP          legacy heap                           (1g)
+#   ES_MEM_LIMIT            container memory cap for single       (4g)
+#   ES_SMALL_MEM_LIMIT      cap for each cluster/secure/legacy    (2g)
+#   ES_MAX_SHARDS_PER_NODE  cluster.max_shards_per_node           (30000)
+#   ES_ILM_POLL_INTERVAL    indices.lifecycle.poll_interval       (5s)
+#   ELASTIC_PASSWORD        password of "elastic" on secure       (esticli-dev)
+#   ES_SECURE_CERT          node cert secure serves: strict | certutil (strict)
+#
+# A memory cap must stay comfortably above its heap (heap + ~1g off-heap), so
+# raise ES_MEM_LIMIT together with ES_HEAP.
+#
+# Data volumes are named per ES version (esticli_single-data-9.5.5, ...), so
+# switching ES_VERSION never tries to start an older node on newer data.
+
+name: esticli
+
+x-es-settings: &es-settings
+  # A nearly full laptop disk must not flip indices read-only or leave shards
+  # unassigned: that would make health colours lie about what is being tested.
+  cluster.routing.allocation.disk.threshold_enabled: "false"
+  xpack.ml.enabled: "false"
+  ingest.geoip.downloader.enabled: "false"
+  action.destructive_requires_name: "false"
+  cluster.max_shards_per_node: ${ES_MAX_SHARDS_PER_NODE:-30000}
+  # ILM checks rollover conditions every 10m by default; 5s makes the seeded
+  # data stream roll over visibly while load.py runs.
+  indices.lifecycle.poll_interval: ${ES_ILM_POLL_INTERVAL:-5s}
+  xpack.license.self_generated.type: basic
+
+x-es-base: &es-base
+  ulimits:
+    memlock: { soft: -1, hard: -1 }
+    nofile: { soft: 65536, hard: 65536 }
+  healthcheck:
+    # "Answers HTTP", not "is green": a deliberately red/yellow fixture must
+    # not mark the container unhealthy. esenv.sh waits for yellow itself.
+    test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:9200/_cluster/health || exit 1"]
+    interval: 5s
+    timeout: 5s
+    retries: 60
+    start_period: 20s
+
+services:
+  # ------------------------------------------------------------------ single
+  es-single:
+    <<: *es-base
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-9.5.5}
+    hostname: es-single
+    # Also in "proxy": the proxies front this node and need it running.
+    profiles: [single, proxy]
+    environment:
+      <<: *es-settings
+      node.name: es-single
+      cluster.name: esticli-single
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ES_HEAP:-2g} -Xmx${ES_HEAP:-2g}
+    mem_limit: ${ES_MEM_LIMIT:-4g}
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - single-data:/usr/share/elasticsearch/data
+
+  # ----------------------------------------------------------------- cluster
+  # Three master+data nodes. They bind to the container network, so ES runs in
+  # production mode and enforces bootstrap checks (needs vm.max_map_count >=
+  # 262144, which Docker Desktop's VM already has).
+  es01:
+    <<: *es-base
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-9.5.5}
+    hostname: es01
+    profiles: [cluster]
+    environment:
+      <<: *es-settings
+      node.name: es01
+      cluster.name: esticli-cluster
+      discovery.seed_hosts: es02,es03
+      cluster.initial_master_nodes: es01,es02,es03
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ES_CLUSTER_HEAP:-1g} -Xmx${ES_CLUSTER_HEAP:-1g}
+    mem_limit: ${ES_SMALL_MEM_LIMIT:-2g}
+    ports:
+      - "127.0.0.1:9201:9200"
+    volumes:
+      - cluster-data-01:/usr/share/elasticsearch/data
+
+  es02:
+    <<: *es-base
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-9.5.5}
+    hostname: es02
+    profiles: [cluster]
+    environment:
+      <<: *es-settings
+      node.name: es02
+      cluster.name: esticli-cluster
+      discovery.seed_hosts: es01,es03
+      cluster.initial_master_nodes: es01,es02,es03
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ES_CLUSTER_HEAP:-1g} -Xmx${ES_CLUSTER_HEAP:-1g}
+    mem_limit: ${ES_SMALL_MEM_LIMIT:-2g}
+    volumes:
+      - cluster-data-02:/usr/share/elasticsearch/data
+
+  es03:
+    <<: *es-base
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-9.5.5}
+    hostname: es03
+    profiles: [cluster]
+    environment:
+      <<: *es-settings
+      node.name: es03
+      cluster.name: esticli-cluster
+      discovery.seed_hosts: es01,es02
+      cluster.initial_master_nodes: es01,es02,es03
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ES_CLUSTER_HEAP:-1g} -Xmx${ES_CLUSTER_HEAP:-1g}
+    mem_limit: ${ES_SMALL_MEM_LIMIT:-2g}
+    volumes:
+      - cluster-data-03:/usr/share/elasticsearch/data
+
+  # ------------------------------------------------------------------ secure
+  # One-shot: creates a CA (elasticsearch-certutil) and two node certificates
+  # in the secure-certs volume, and exports only the CA certificate to
+  # docker/certs/ca.crt for `esticli --ca-cert`. Re-running is a no-op once
+  # the files exist. See secure/setup-certs.sh for why there are two node
+  # certificates (ES_SECURE_CERT=strict|certutil picks the one served).
+  secure-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-9.5.5}
+    profiles: [secure]
+    user: "0"
+    entrypoint: ["bash", "/setup/setup-certs.sh"]
+    volumes:
+      - secure-certs:/usr/share/elasticsearch/config/certs
+      - ./secure:/setup:ro
+      - ./certs:/export
+
+  es-secure:
+    <<: *es-base
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-9.5.5}
+    hostname: es-secure
+    profiles: [secure]
+    depends_on:
+      secure-setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *es-settings
+      node.name: es-secure
+      cluster.name: esticli-secure
+      discovery.type: single-node
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-esticli-dev}
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.key: certs/${ES_SECURE_CERT:-strict}/node.key
+      xpack.security.http.ssl.certificate: certs/${ES_SECURE_CERT:-strict}/node.crt
+      xpack.security.http.ssl.certificate_authorities: certs/ca/ca.crt
+      xpack.security.transport.ssl.enabled: "true"
+      xpack.security.transport.ssl.key: certs/${ES_SECURE_CERT:-strict}/node.key
+      xpack.security.transport.ssl.certificate: certs/${ES_SECURE_CERT:-strict}/node.crt
+      xpack.security.transport.ssl.certificate_authorities: certs/ca/ca.crt
+      xpack.security.transport.ssl.verification_mode: certificate
+      ES_JAVA_OPTS: -Xms${ES_SECURE_HEAP:-1g} -Xmx${ES_SECURE_HEAP:-1g}
+    mem_limit: ${ES_SMALL_MEM_LIMIT:-2g}
+    ports:
+      - "127.0.0.1:9202:9200"
+    volumes:
+      - secure-certs:/usr/share/elasticsearch/config/certs
+      - secure-data:/usr/share/elasticsearch/data
+    healthcheck:
+      # 401 still means "up": only the TLS + HTTP layer is being probed, so
+      # the check doesn't depend on the password.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sS -o /dev/null -w '%{http_code}'
+          --cacert config/certs/ca/ca.crt https://localhost:9200/
+          | grep -qE '^(200|401)$$'
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  # ------------------------------------------------------------------ legacy
+  es-legacy:
+    <<: *es-base
+    image: docker.elastic.co/elasticsearch/elasticsearch:${LEGACY_ES_VERSION:-7.17.28}
+    hostname: es-legacy
+    profiles: [legacy]
+    environment:
+      <<: *es-settings
+      node.name: es-legacy
+      cluster.name: esticli-legacy
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ES_LEGACY_HEAP:-1g} -Xmx${ES_LEGACY_HEAP:-1g}
+    mem_limit: ${ES_SMALL_MEM_LIMIT:-2g}
+    ports:
+      - "127.0.0.1:9207:9200"
+    volumes:
+      - legacy-data:/usr/share/elasticsearch/data
+
+  # ------------------------------------------------------------------- proxy
+  # Serves es-single under a path prefix: http://localhost:9280/es/ -> /.
+  # Anything outside /es/ gets a 404 naming the path, so a client that drops
+  # the prefix is easy to spot (docker compose logs nginx shows every path).
+  nginx:
+    image: nginx:1.27.5-alpine
+    profiles: [proxy]
+    depends_on:
+      es-single:
+        condition: service_healthy
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:9280:80"
+
+  # TCP proxy in front of es-single for latency/timeout/reset injection.
+  # Proxy "es" listens on :9290; the control API is on :8474
+  # (docker/scripts/toxics.py drives it).
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    profiles: [proxy]
+    depends_on:
+      es-single:
+        condition: service_healthy
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes:
+      - ./proxy/toxiproxy.json:/config/toxiproxy.json:ro
+    ports:
+      - "127.0.0.1:8474:8474"
+      - "127.0.0.1:9290:9290"
+
+volumes:
+  single-data:
+    name: esticli_single-data-${ES_VERSION:-9.5.5}
+  cluster-data-01:
+    name: esticli_cluster-data-01-${ES_VERSION:-9.5.5}
+  cluster-data-02:
+    name: esticli_cluster-data-02-${ES_VERSION:-9.5.5}
+  cluster-data-03:
+    name: esticli_cluster-data-03-${ES_VERSION:-9.5.5}
+  secure-data:
+    name: esticli_secure-data-${ES_VERSION:-9.5.5}
+  secure-certs:
+    name: esticli_secure-certs
+  legacy-data:
+    name: esticli_legacy-data-${LEGACY_ES_VERSION:-7.17.28}
