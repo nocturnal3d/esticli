@@ -1,4 +1,26 @@
+use std::sync::LazyLock;
+
 use human_format::{Formatter, Scales};
+
+// Built once and reused. Constructing a `Formatter` allocates its whole suffix
+// table (two dozen small strings), which made building one per call ~5x the
+// cost of the formatting itself — and these run several times per on-screen
+// row on every frame.
+static NUMBER_FORMATTER: LazyLock<Formatter> = LazyLock::new(|| {
+    let mut formatter = Formatter::new();
+    formatter.with_decimals(1).with_separator("");
+    formatter
+});
+
+static BYTES_FORMATTER: LazyLock<Formatter> = LazyLock::new(|| {
+    let mut formatter = Formatter::new();
+    formatter
+        .with_decimals(1)
+        .with_separator(" ")
+        .with_scales(Scales::Binary())
+        .with_units("B");
+    formatter
+});
 
 // Format a number with SI suffixes (K, M, B, T)
 pub fn format_number(value: f64) -> String {
@@ -10,20 +32,12 @@ pub fn format_number(value: f64) -> String {
         return format!("{:.1}", value);
     }
 
-    Formatter::new()
-        .with_decimals(1)
-        .with_separator("")
-        .format(value)
+    NUMBER_FORMATTER.format(value)
 }
 
 // Format bytes with binary suffixes (KB, MB, GB, TB)
 pub fn format_bytes(bytes: u64) -> String {
-    Formatter::new()
-        .with_decimals(1)
-        .with_separator(" ")
-        .with_scales(Scales::Binary())
-        .with_units("B")
-        .format(bytes as f64)
+    BYTES_FORMATTER.format(bytes as f64)
 }
 
 #[cfg(test)]
@@ -40,5 +54,12 @@ mod tests {
         assert_eq!(format_number(1.0), "1.0");
         assert_eq!(format_number(999.0), "999.0");
         assert_eq!(format_number(1500.0), "1.5k");
+    }
+
+    #[test]
+    fn test_format_bytes_uses_binary_units() {
+        assert_eq!(format_bytes(0), "0.0 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(5 * 1024 * 1024 * 1024), "5.0 GiB");
     }
 }

@@ -3,7 +3,9 @@ pub mod details;
 pub mod filter;
 pub mod snapshot;
 pub mod sort;
+pub mod versioned;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -21,6 +23,7 @@ use self::details::DetailsState;
 use self::filter::FilterState;
 use self::snapshot::SnapshotState;
 use self::sort::{NodeSortState, SortState};
+use self::versioned::Versioned;
 
 // One history sample is drawn per terminal column, so this needs to comfortably
 // exceed the width of a wide terminal or the graph can never fill its panel.
@@ -64,13 +67,42 @@ pub struct ClusterMetrics {
     pub bytes_per_sec: f64,
 }
 
-/// Result of a single pass over `indices` applying all active visibility
-/// filters (exclusions, system indices, jq filter): the surviving indices
-/// plus their aggregated metrics, computed together so callers never need
-/// to filter the same data twice.
+/// The indices surviving every active visibility filter (exclusions, system
+/// indices, the filter box) plus their aggregated metrics, computed together
+/// in one pass — see `App::visible_summary`.
 pub struct VisibleSummary<'a> {
     pub indices: Vec<&'a IndexRate>,
     pub metrics: ClusterMetrics,
+}
+
+/// Everything the visible set is derived from. While none of it changes,
+/// neither does the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisibleKey {
+    indices: u64,
+    excluded: u64,
+    filter: u64,
+    show_system_indices: bool,
+    main_panel: MainPanel,
+}
+
+/// The last visibility pass, kept until something it was derived from
+/// changes.
+///
+/// The pass is cheap with an empty filter box but not with a filter in it:
+/// jq mode serializes and evaluates every row (~33ms at 50k indices) and a
+/// true regex runs over every name (~15ms). The loop redraws ~20x a second
+/// and every cursor movement looks the selection up in the visible list, so
+/// without this, a filter that hadn't changed in minutes was re-run on every
+/// frame and every keypress — most of a core spent idle, and visible lag on
+/// each key.
+#[derive(Default)]
+struct VisibleCache {
+    /// What the cached pass was computed from; `None` before the first one.
+    key: Option<VisibleKey>,
+    /// Positions in `App::indices` of the rows that passed, in display order.
+    positions: Vec<usize>,
+    metrics: ClusterMetrics,
 }
 
 /// Main application state and logic controller.
@@ -78,7 +110,9 @@ pub struct VisibleSummary<'a> {
 /// This struct holds all the state necessary to render the TUI and handles
 /// all user actions and background data fetching.
 pub struct App {
-    pub indices: Vec<IndexRate>,
+    /// Versioned so the memoized visible set (`visible_summary`) notices any
+    /// change to it, however it is made.
+    pub indices: Versioned<Vec<IndexRate>>,
     pub running: bool,
     pub error: Option<String>,
     pub loading: bool,
@@ -110,7 +144,8 @@ pub struct App {
     /// Node selection, keyed by name for the same reason as `selected_name`.
     pub selected_node: Option<String>,
     pub node_table_offset: usize,
-    pub excluded_indices: HashSet<String>,
+    /// Versioned for the same reason as `indices`.
+    pub excluded_indices: Versioned<HashSet<String>>,
     pub show_help_popup: bool,
     pub help_scroll: usize,
     pub colormap: Colormap,
@@ -127,6 +162,9 @@ pub struct App {
     pub snapshot: SnapshotState,
 
     index_rate_history: HashMap<String, VecDeque<f64>>,
+    /// Interior mutability so the read-only `visible_summary` can memoize.
+    /// No borrow of it outlives the method that takes it.
+    visible_cache: RefCell<VisibleCache>,
     /// Stateless and cheap to clone: each background task gets its own copy,
     /// so a details fetch never waits behind a slow polling tick.
     es_client: EsClient,
@@ -158,7 +196,7 @@ impl App {
         let (fetch_tx, fetch_rx) = mpsc::channel(1);
 
         Ok(Self {
-            indices: Vec::new(),
+            indices: Versioned::default(),
             running: true,
             error: None,
             loading: false,
@@ -180,7 +218,7 @@ impl App {
             nodes: Vec::new(),
             selected_node: None,
             node_table_offset: 0,
-            excluded_indices: HashSet::new(),
+            excluded_indices: Versioned::default(),
             show_help_popup: false,
             help_scroll: 0,
             colormap,
@@ -194,6 +232,7 @@ impl App {
             snapshot: SnapshotState::default(),
 
             index_rate_history: HashMap::new(),
+            visible_cache: RefCell::default(),
             es_client,
             rate_tracker: Arc::new(Mutex::new(RateTracker::default())),
             refetch_pending: false,
@@ -237,15 +276,30 @@ impl App {
         self.main_panel != MainPanel::Indices || self.filter.is_match(index)
     }
 
-    /// Computes the visible indices and their aggregated cluster metrics in
-    /// a single pass. Callers that need both (e.g. the UI on every draw)
-    /// should call this once rather than combining `filtered_indices()` and
-    /// `total_cluster_rate()`, which would filter the same data twice.
-    pub fn visible_summary(&self) -> VisibleSummary<'_> {
-        let mut indices = Vec::with_capacity(self.indices.len());
+    fn visible_key(&self) -> VisibleKey {
+        VisibleKey {
+            indices: self.indices.version(),
+            excluded: self.excluded_indices.version(),
+            filter: self.filter.version(),
+            show_system_indices: self.show_system_indices,
+            main_panel: self.main_panel,
+        }
+    }
+
+    /// Re-runs the visibility pass over every index, but only if something
+    /// it depends on has changed since the last one. Every input is either
+    /// versioned or compared by value in `VisibleKey`, so there is no
+    /// invalidation call for a new mutation site to forget.
+    fn refresh_visible(&self) {
+        let key = self.visible_key();
+        if self.visible_cache.borrow().key == Some(key) {
+            return;
+        }
+
+        let mut positions = Vec::with_capacity(self.indices.len());
         let mut metrics = ClusterMetrics::default();
 
-        for index in &self.indices {
+        for (position, index) in self.indices.iter().enumerate() {
             if !self.is_visible(index) {
                 continue;
             }
@@ -256,14 +310,38 @@ impl App {
                 metrics.bytes_per_sec += avg_doc_size * index.rate_per_sec;
             }
 
-            indices.push(index);
+            positions.push(position);
         }
 
-        VisibleSummary { indices, metrics }
+        self.visible_cache.replace(VisibleCache {
+            key: Some(key),
+            positions,
+            metrics,
+        });
+    }
+
+    /// The visible indices and their aggregated cluster metrics.
+    ///
+    /// Memoized: the filtering pass runs once per change to its inputs (a
+    /// refresh tick, an edit to the filter, an exclusion), not once per call,
+    /// so calling this every frame and on every keypress costs only
+    /// collecting references to the surviving rows.
+    pub fn visible_summary(&self) -> VisibleSummary<'_> {
+        self.refresh_visible();
+        let cache = self.visible_cache.borrow();
+        VisibleSummary {
+            indices: cache
+                .positions
+                .iter()
+                .map(|&position| &self.indices[position])
+                .collect(),
+            metrics: cache.metrics,
+        }
     }
 
     pub fn total_cluster_rate(&self) -> f64 {
-        self.visible_summary().metrics.rate_per_sec
+        self.refresh_visible();
+        self.visible_cache.borrow().metrics.rate_per_sec
     }
 
     // Starts a background fetch of index rates from Elasticsearch.
@@ -332,8 +410,9 @@ impl App {
     }
 
     /// Applies whichever parts of a tick succeeded and reports the ones that
-    /// didn't, most important first.
-    fn apply_fetch(&mut self, payload: FetchPayload) {
+    /// didn't, most important first. Crate-visible so the perf harness can
+    /// time a refresh tick without a cluster.
+    pub(crate) fn apply_fetch(&mut self, payload: FetchPayload) {
         let FetchPayload {
             indices,
             health,
@@ -345,7 +424,7 @@ impl App {
             Ok(rates) => {
                 let mut indices = self.update_indices_with_rates(rates);
                 self.sort.sort(&mut indices);
-                self.indices = indices;
+                self.indices = indices.into();
                 true
             }
             Err(e) => {
@@ -400,11 +479,17 @@ impl App {
             return;
         }
 
-        // Prune index_rate_history for indices that no longer exist
-        let current_index_names: HashSet<&str> =
-            self.indices.iter().map(|i| i.name.as_str()).collect();
-        self.index_rate_history
-            .retain(|name, _| current_index_names.contains(name.as_str()));
+        // Prune index_rate_history for indices that no longer exist. Every
+        // current index has just touched its entry and names are unique (they
+        // are `_stats` map keys), so the map can only hold stale entries if it
+        // has outgrown the list. On most ticks nothing was deleted, and the
+        // name set below — one string hash per index — is skipped.
+        if self.index_rate_history.len() > self.indices.len() {
+            let current_index_names: HashSet<&str> =
+                self.indices.iter().map(|i| i.name.as_str()).collect();
+            self.index_rate_history
+                .retain(|name, _| current_index_names.contains(name.as_str()));
+        }
 
         self.clamp_selection();
 
@@ -786,7 +871,7 @@ impl App {
     }
 
     pub fn filtered_indices(&self) -> Vec<&IndexRate> {
-        self.indices.iter().filter(|i| self.is_visible(i)).collect()
+        self.visible_summary().indices
     }
 
     // Details delegation
@@ -1045,7 +1130,8 @@ mod tests {
                 size_bytes: 3072,
                 health: "green".to_string(),
             },
-        ];
+        ]
+        .into();
         app
     }
 
@@ -1472,6 +1558,44 @@ mod tests {
     }
 
     #[test]
+    fn test_rate_history_is_pruned_when_an_index_is_deleted() {
+        let mut app = setup_mock_app();
+        let tick = |names: &[&str]| FetchPayload {
+            indices: Ok(names
+                .iter()
+                .map(|name| {
+                    let index = IndexRate {
+                        name: name.to_string(),
+                        ..app_index()
+                    };
+                    (index, Some(1.0))
+                })
+                .collect()),
+            health: Ok(ClusterHealth::default()),
+            nodes: None,
+        };
+
+        app.apply_fetch(tick(&["a", "b"]));
+        app.apply_fetch(tick(&["a", "b"]));
+        assert_eq!(app.index_rate_history.len(), 2);
+
+        // `b` was deleted: its smoothing window must not outlive it.
+        app.apply_fetch(tick(&["a"]));
+        assert_eq!(app.index_rate_history.len(), 1);
+        assert!(app.index_rate_history.contains_key("a"));
+    }
+
+    fn app_index() -> IndexRate {
+        IndexRate {
+            name: String::new(),
+            doc_count: 1,
+            rate_per_sec: 0.0,
+            size_bytes: 1,
+            health: "green".to_string(),
+        }
+    }
+
+    #[test]
     fn test_a_failing_section_does_not_discard_the_rest_of_the_tick() {
         use crate::error::EstiCliError;
 
@@ -1498,5 +1622,107 @@ mod tests {
             "{}",
             error
         );
+    }
+
+    fn visible_names(app: &App) -> Vec<&str> {
+        app.filtered_indices()
+            .iter()
+            .map(|index| index.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn test_memoized_visible_set_follows_every_input() {
+        let mut app = setup_mock_app();
+        assert_eq!(visible_names(&app), ["index-1", "index-2", "index-3"]);
+
+        // The filter box.
+        app.filter.input = "index-2".into();
+        app.filter.recompile();
+        assert_eq!(visible_names(&app), ["index-2"]);
+        app.filter.clear();
+        assert_eq!(visible_names(&app), ["index-1", "index-2", "index-3"]);
+
+        // Exclusions, including one written straight into the set.
+        app.excluded_indices.insert("index-1".to_string());
+        assert_eq!(visible_names(&app), ["index-2", "index-3"]);
+        app.clear_exclusions();
+
+        // Rows pushed directly, and the system-index toggle.
+        let system = IndexRate {
+            name: ".kibana_1".to_string(),
+            ..app.indices[0].clone()
+        };
+        app.indices.push(system);
+        assert_eq!(visible_names(&app), ["index-1", "index-2", "index-3"]);
+        app.toggle_system_indices();
+        assert_eq!(
+            visible_names(&app),
+            ["index-1", "index-2", "index-3", ".kibana_1"]
+        );
+        app.toggle_system_indices();
+
+        // A field edited in place under a jq filter that reads it.
+        app.filter.toggle_mode();
+        app.filter.input = ".doc_count > 250".into();
+        app.filter.recompile();
+        assert_eq!(visible_names(&app), ["index-3"]);
+        app.indices[0].doc_count = 1000;
+        assert_eq!(visible_names(&app), ["index-1", "index-3"]);
+
+        // Sorting reorders the rows the positions point at (the mock rows
+        // start unsorted, so it takes the second toggle, to descending by
+        // rate, to move them).
+        app.toggle_sort_order();
+        app.toggle_sort_order();
+        assert_eq!(visible_names(&app), ["index-3", "index-1"]);
+
+        // Switching panels takes the filter off the indices (the system
+        // index stays behind its own toggle).
+        app.toggle_nodes();
+        assert_eq!(visible_names(&app), ["index-3", "index-2", "index-1"]);
+
+        // And the header metrics are invalidated along with the rows.
+        app.toggle_nodes();
+        assert_eq!(app.total_cluster_rate(), 1.0 + 3.0);
+        let index_3 = app
+            .indices
+            .iter()
+            .position(|index| index.name == "index-3")
+            .unwrap();
+        app.indices[index_3].rate_per_sec = 10.0;
+        assert_eq!(app.total_cluster_rate(), 1.0 + 10.0);
+    }
+
+    #[test]
+    fn test_visible_set_is_not_refiltered_while_nothing_changes() {
+        let mut app = setup_mock_app();
+        app.filter.input = "index".into();
+        app.filter.recompile();
+
+        let pass = |app: &App| {
+            app.visible_summary();
+            app.visible_cache.borrow().positions.as_ptr()
+        };
+        let first = pass(&app);
+
+        // Redraws, cursor movement and the filter caret blinking are what
+        // happen many times a second; none of them may re-run the filter.
+        assert_eq!(pass(&app), first);
+        app.select_down();
+        app.select_last();
+        assert_eq!(pass(&app), first);
+        app.filter.handle_key(&crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Left,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ));
+        assert_eq!(pass(&app), first);
+
+        // An edit to the text does.
+        app.filter.input = "index-".into();
+        app.filter.recompile();
+        assert_ne!(pass(&app), first);
     }
 }
