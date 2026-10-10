@@ -8,6 +8,7 @@ use std::time::Instant;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
+use super::versioned::Versioned;
 use crate::models::{IndexRate, NodeStats};
 
 /// How long the cursor stays solid before blinking off, and vice versa.
@@ -100,8 +101,10 @@ pub struct FilterState {
     /// `cursor_visible()` to drive the blink animation; `None` renders as
     /// permanently visible (used before the filter is ever entered).
     cursor_blink_anchor: Option<Instant>,
-    /// Cached compiled filter - only recompiled when input or mode changes
-    compiled: Option<Compiled>,
+    /// Cached compiled filter - only recompiled when input or mode changes.
+    /// Versioned so `App` can tell when its memoized visible set is stale;
+    /// see `version()`.
+    compiled: Versioned<Option<Compiled>>,
 }
 
 impl FilterState {
@@ -121,7 +124,15 @@ impl FilterState {
         self.input.reset();
         self.mode = FilterMode::default();
         self.error = None;
-        self.compiled = None;
+        *self.compiled = None;
+    }
+
+    /// Changes whenever the compiled filter does, and only then — so what
+    /// rows match can be memoized against it. Cursor movement and the caret
+    /// blink never touch `compiled`, so they leave this alone and cost no
+    /// re-filtering.
+    pub fn version(&self) -> u64 {
+        self.compiled.version()
     }
 
     /// Inserts pasted text at the cursor. Line breaks become spaces: a paste
@@ -179,7 +190,7 @@ impl FilterState {
         let text = self.input.value();
         if text.is_empty() {
             self.error = None;
-            self.compiled = None;
+            *self.compiled = None;
             return;
         }
 
@@ -188,16 +199,16 @@ impl FilterState {
             // `Compiled` doc comment for why this must not go through jq.
             FilterMode::Regex if is_plain_substring(text) => {
                 self.error = None;
-                self.compiled = Some(Compiled::Literal(text.to_string()));
+                *self.compiled = Some(Compiled::Literal(text.to_string()));
             }
             FilterMode::Regex => match Regex::new(text) {
                 Ok(re) => {
                     self.error = None;
-                    self.compiled = Some(Compiled::Regex(re));
+                    *self.compiled = Some(Compiled::Regex(re));
                 }
                 Err(e) => {
                     self.error = Some(e.to_string());
-                    self.compiled = None;
+                    *self.compiled = None;
                 }
             },
             // The user types the boolean expression only; `select(...)` is
@@ -222,17 +233,17 @@ impl FilterState {
                         match probe {
                             Ok(_) => {
                                 self.error = None;
-                                self.compiled = Some(Compiled::Jq(filter));
+                                *self.compiled = Some(Compiled::Jq(filter));
                             }
                             Err(e) => {
                                 self.error = Some(e);
-                                self.compiled = None;
+                                *self.compiled = None;
                             }
                         }
                     }
                     Err(e) => {
                         self.error = Some(e);
-                        self.compiled = None;
+                        *self.compiled = None;
                     }
                 }
             }
@@ -247,7 +258,7 @@ impl FilterState {
     /// serializes to, which is how the same filter box can drive both the
     /// indices and the nodes panel.
     pub fn matches<T: Serialize>(&self, name: &str, value: &T) -> bool {
-        match &self.compiled {
+        match &*self.compiled {
             // No filter or error means match everything
             None => true,
             Some(Compiled::Literal(needle)) => name.contains(needle.as_str()),
@@ -523,7 +534,7 @@ mod tests {
         filter_state.recompile();
 
         assert!(
-            matches!(filter_state.compiled, Some(Compiled::Literal(_))),
+            matches!(*filter_state.compiled, Some(Compiled::Literal(_))),
             "a metacharacter-free pattern should skip the regex engine"
         );
         assert!(filter_state.is_match(&named("prod-logs-app-01")));
@@ -541,7 +552,7 @@ mod tests {
             };
             filter_state.recompile();
             assert!(
-                matches!(filter_state.compiled, Some(Compiled::Regex(_))),
+                matches!(*filter_state.compiled, Some(Compiled::Regex(_))),
                 "{pattern} should compile as a regex, not a literal"
             );
         }
@@ -614,13 +625,17 @@ mod tests {
         // would definitely overwrite, so if it survives a cursor move we
         // know recompile() was never called for it.
         filter.error = Some("SENTINEL".to_string());
-        filter.compiled = None;
+        *filter.compiled = None;
+        let version = filter.version();
 
         let left = Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         filter.handle_key(&left);
 
         assert_eq!(filter.error.as_deref(), Some("SENTINEL"));
         assert!(filter.compiled.is_none());
+        // Nor may it look like the filter changed: that would throw away the
+        // memoized visible set and re-filter every index on each arrow key.
+        assert_eq!(filter.version(), version);
 
         // Typing an actual character, on the other hand, must still
         // recompile and clear the sentinel.
@@ -628,6 +643,7 @@ mod tests {
         filter.handle_key(&c);
         assert!(filter.error.is_none());
         assert!(filter.compiled.is_some());
+        assert_ne!(filter.version(), version);
     }
 
     #[test]

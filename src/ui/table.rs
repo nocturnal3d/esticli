@@ -242,7 +242,8 @@ mod tests {
                 size_bytes: 1024,
                 health: "green".to_string(),
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .into();
         app
     }
 

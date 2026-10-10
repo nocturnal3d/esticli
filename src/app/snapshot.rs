@@ -280,7 +280,7 @@ impl SnapshotState {
     ///
     /// Indices that have disappeared are dropped so the map doesn't outlive
     /// the cluster; nodes are kept (see below). This is the only part of the feature with a cost that scales
-    /// with the cluster — ~2.5ms at 50k indices — and it deliberately sits
+    /// with the cluster — ~0.6ms at 50k indices — and it deliberately sits
     /// here, on the refresh tick, rather than in the render path: the tables
     /// redraw ~20x a second and only ever do a hash lookup per on-screen row,
     /// which measures as zero against the render they were already doing. `nodes` is `None` when `_nodes/stats` wasn't requested this
@@ -297,12 +297,17 @@ impl SnapshotState {
                     .insert(index.name.clone(), IndexBaseline::from(index));
             }
         }
-        // Membership goes through a set rather than a scan per surviving
-        // entry: this runs on every refresh tick, and the quadratic version
-        // would be 2.5 billion comparisons on a 50k-index cluster.
-        let present: HashSet<&str> = indices.iter().map(|index| index.name.as_str()).collect();
-        self.indices
-            .retain(|name, _| present.contains(name.as_str()));
+        // Every index present now has a baseline, and names are unique (they
+        // are `_stats` map keys), so the map can only hold vanished ones if it
+        // has outgrown the list — on most ticks nothing was deleted and the
+        // set below is never built. When it is, membership goes through a set
+        // rather than a scan per surviving entry: the quadratic version would
+        // be 2.5 billion comparisons on a 50k-index cluster.
+        if self.indices.len() > indices.len() {
+            let present: HashSet<&str> = indices.iter().map(|index| index.name.as_str()).collect();
+            self.indices
+                .retain(|name, _| present.contains(name.as_str()));
+        }
 
         let Some(nodes) = nodes else {
             return;

@@ -163,9 +163,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     {
         let areas = compute_areas(frame.area(), app);
-        // Filter once per frame and share the result across every widget that
-        // needs it, instead of each widget re-running the (potentially jq-based)
-        // visibility filter over every index independently.
+        // Fetched once per frame and shared across every widget that needs
+        // it. The filtering pass behind it is memoized and only re-runs when
+        // the data or a filter changes, so this is just collecting references.
         let summary = app.visible_summary();
 
         frame.render_widget(Header::new(app, summary.metrics), areas.header);

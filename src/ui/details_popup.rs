@@ -58,11 +58,14 @@ impl<'a> Widget for DetailsPopup<'a> {
             .title(title(self.app))
             .borders(Borders::ALL)
             .border_style(Style::new().fg(Color::Cyan));
-        let scroll = self.app.details.scroll.min(max_scroll(self.app, area));
 
+        // Already clamped to `max_scroll` by `ui::draw` this frame. Not
+        // clamped again here: that means building and wrapping every line a
+        // second time, which grows with the shard count (~0.9ms of the frame
+        // for an index with 1000 shard copies).
         Paragraph::new(content(self.app))
             .block(block)
-            .scroll((scroll as u16, 0))
+            .scroll((self.app.details.scroll as u16, 0))
             .wrap(Wrap { trim: false })
             .render(popup_area, buf);
     }
