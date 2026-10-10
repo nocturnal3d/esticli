@@ -1,5 +1,35 @@
+use std::cmp::Ordering;
+
 use crate::models::{IndexRate, NodeStats};
 use crate::ui::types::{NodeSortColumn, SortColumn, SortOrder};
+
+/// How bad a health status is, for sorting: alphabetically `red` falls
+/// between `green` and `yellow`, so the indices most worth seeing could never
+/// be brought to the top. Unknown (7.x clusters don't report per-index
+/// health in `_stats`) ranks below green.
+fn health_rank(health: &str) -> u8 {
+    match health {
+        "green" => 1,
+        "yellow" => 2,
+        "red" => 3,
+        _ => 0,
+    }
+}
+
+/// Applies the sort direction to a column comparison, then breaks ties by
+/// name — always ascending, whichever way the column runs.
+///
+/// Without the tiebreak, rows that compare equal (every idle index at rate 0,
+/// the default sort) come back in whatever order the `_stats` map happened to
+/// iterate in, which changes on every refresh: the bottom of the table
+/// reshuffled every tick.
+fn directed(cmp: Ordering, order: SortOrder, name_a: &str, name_b: &str) -> Ordering {
+    let cmp = match order {
+        SortOrder::Ascending => cmp,
+        SortOrder::Descending => cmp.reverse(),
+    };
+    cmp.then_with(|| name_a.cmp(name_b))
+}
 
 #[derive(Default)]
 pub struct SortState {
@@ -30,13 +60,12 @@ impl SortState {
                     .partial_cmp(&index_b.rate_per_sec)
                     .unwrap_or(std::cmp::Ordering::Equal),
                 SortColumn::Size => index_a.size_bytes.cmp(&index_b.size_bytes),
-                SortColumn::Health => index_a.health.cmp(&index_b.health),
+                SortColumn::Health => {
+                    health_rank(&index_a.health).cmp(&health_rank(&index_b.health))
+                }
             };
 
-            match self.order {
-                SortOrder::Ascending => cmp,
-                SortOrder::Descending => cmp.reverse(),
-            }
+            directed(cmp, self.order, &index_a.name, &index_b.name)
         });
     }
 }
@@ -78,10 +107,7 @@ impl NodeSortState {
                     .cmp(&node_b.breaker_parent_tripped),
             };
 
-            match self.order {
-                SortOrder::Ascending => cmp,
-                SortOrder::Descending => cmp.reverse(),
-            }
+            directed(cmp, self.order, &node_a.name, &node_b.name)
         });
     }
 }
@@ -128,7 +154,7 @@ mod tests {
             heap_used_percent: heap,
             index_failed: failed,
             bulk_avg_size_bytes: bulk,
-            cpu_percent: cpu,
+            cpu_percent: Some(cpu),
             breaker_parent_tripped: tripped,
         };
         // Each node leads exactly one column, so a descending sort on that
@@ -182,6 +208,46 @@ mod tests {
         sort.sort(&mut indices);
         assert_eq!(indices[0].name, "a");
         assert_eq!(indices[1].name, "z");
+    }
+
+    #[test]
+    fn test_ties_keep_a_stable_name_order_in_either_direction() {
+        // Idle indices all tie on rate; their order must not depend on how
+        // the response map happened to iterate.
+        for order in [SortOrder::Ascending, SortOrder::Descending] {
+            let mut indices = vec![
+                mock_index("c", 0, 0.0),
+                mock_index("a", 0, 0.0),
+                mock_index("b", 0, 0.0),
+            ];
+            SortState {
+                column: SortColumn::Rate,
+                order,
+            }
+            .sort(&mut indices);
+            let names: Vec<&str> = indices.iter().map(|i| i.name.as_str()).collect();
+            assert_eq!(names, ["a", "b", "c"], "{:?}", order);
+        }
+    }
+
+    #[test]
+    fn test_health_sorts_by_severity() {
+        let with_health = |name: &str, health: &str| IndexRate {
+            health: health.to_string(),
+            ..mock_index(name, 0, 0.0)
+        };
+        let mut indices = vec![
+            with_health("g", "green"),
+            with_health("r", "red"),
+            with_health("y", "yellow"),
+        ];
+        SortState {
+            column: SortColumn::Health,
+            order: SortOrder::Descending,
+        }
+        .sort(&mut indices);
+        let names: Vec<&str> = indices.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["r", "y", "g"]);
     }
 
     #[test]

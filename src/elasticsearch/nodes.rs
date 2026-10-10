@@ -3,6 +3,16 @@ use super::types::NodesStatsResponse;
 use crate::error::Result;
 use crate::models::NodeStats;
 
+/// The only leaves of `_nodes/stats` the nodes panel reads. The metric list
+/// in the path already narrows the response to four sections, but each of
+/// those still carries dozens of fields per node nothing displays.
+const NODES_FILTER_PATH: &str = "nodes.*.name,\
+nodes.*.indices.indexing.index_failed,\
+nodes.*.indices.bulk.avg_size_in_bytes,\
+nodes.*.jvm.mem.heap_used_percent,\
+nodes.*.process.cpu.percent,\
+nodes.*.breakers.parent.tripped";
+
 /// Fetches per-node stats.
 ///
 /// The metric list is narrowed to the four sections the nodes panel actually
@@ -12,9 +22,9 @@ use crate::models::NodeStats;
 /// Takes `&EsClient` (like `stats::fetch_snapshot`) so it can be joined with
 /// the other per-tick requests rather than run after them.
 pub async fn fetch_node_stats(client: &EsClient) -> Result<Vec<NodeStats>> {
-    let url = client
-        .base_url
-        .join("_nodes/stats/indices,jvm,process,breaker")?;
+    let mut url = client.endpoint(&["_nodes", "stats", "indices,jvm,process,breaker"]);
+    url.query_pairs_mut()
+        .append_pair("filter_path", NODES_FILTER_PATH);
     let request = client.client.get(url);
 
     let response: NodesStatsResponse = client.send_json(request).await?;
@@ -34,7 +44,7 @@ pub async fn fetch_node_stats(client: &EsClient) -> Result<Vec<NodeStats>> {
             heap_used_percent: entry.jvm.mem.heap_used_percent,
             index_failed: entry.indices.indexing.index_failed,
             bulk_avg_size_bytes: entry.indices.bulk.avg_size_in_bytes,
-            cpu_percent: entry.process.cpu.percent,
+            cpu_percent: u64::try_from(entry.process.cpu.percent).ok(),
             breaker_parent_tripped: entry.breakers.parent.tripped,
         })
         .collect();

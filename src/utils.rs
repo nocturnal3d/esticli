@@ -16,6 +16,16 @@ pub fn format_number(value: f64) -> String {
         .format(value)
 }
 
+// Format bytes with binary suffixes (KB, MB, GB, TB)
+pub fn format_bytes(bytes: u64) -> String {
+    Formatter::new()
+        .with_decimals(1)
+        .with_separator(" ")
+        .with_scales(Scales::Binary())
+        .with_units("B")
+        .format(bytes as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -31,14 +41,4 @@ mod tests {
         assert_eq!(format_number(999.0), "999.0");
         assert_eq!(format_number(1500.0), "1.5k");
     }
-}
-
-// Format bytes with binary suffixes (KB, MB, GB, TB)
-pub fn format_bytes(bytes: u64) -> String {
-    Formatter::new()
-        .with_decimals(1)
-        .with_separator(" ")
-        .with_scales(Scales::Binary())
-        .with_units("B")
-        .format(bytes as f64)
 }

@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Local};
 
 use crate::models::{IndexRate, NodeStats};
+use crate::utils::format_number;
 
 /// How a metric behaves over time, which is what decides how a move away from
 /// the baseline should be read.
@@ -87,6 +88,20 @@ impl Trend {
             _ => Trend::Unchanged,
         }
     }
+}
+
+/// Compares smoothed indexing rates at the precision the table shows them.
+///
+/// The rate is an average of floating-point samples, so it almost never lands
+/// on exactly the same value twice; compared exactly, every index that is
+/// ingesting at all would carry an arrow on every tick, including ones whose
+/// on-screen number reads identically to the snapshot. An arrow means the
+/// number you can see has moved.
+fn rate_trend(current: f64, baseline: f64) -> Trend {
+    if format_number(current) == format_number(baseline) {
+        return Trend::Unchanged;
+    }
+    Trend::compare(MetricKind::Gauge, current, baseline)
 }
 
 /// One cumulative counter's baseline, plus whether it has been seen to
@@ -184,7 +199,7 @@ impl From<&IndexRate> for IndexBaseline {
 /// baseline has to follow it when it does.
 #[derive(Debug, Clone, Copy)]
 struct NodeBaseline {
-    cpu_percent: u64,
+    cpu_percent: Option<u64>,
     heap_used_percent: u64,
     index_failed: CounterBaseline,
     bulk_avg_size_bytes: u64,
@@ -227,13 +242,20 @@ impl SnapshotState {
 
     /// Freezes the readings currently on screen as the new baseline. Taking a
     /// second snapshot re-baselines from now rather than stacking.
-    pub fn capture(&mut self, indices: &[IndexRate], nodes: &[NodeStats]) {
+    ///
+    /// `nodes` is `None` when the node readings at hand are not current — the
+    /// nodes panel isn't on screen, so they are whatever it showed the last
+    /// time it was. Freezing those as "now" would compare every later reading
+    /// against a moment long before the keypress; the node half is instead
+    /// left empty and filled in by the first fetch that requests nodes.
+    pub fn capture(&mut self, indices: &[IndexRate], nodes: Option<&[NodeStats]>) {
         self.taken_at = Some(Local::now());
         self.indices = indices
             .iter()
             .map(|index| (index.name.clone(), IndexBaseline::from(index)))
             .collect();
         self.nodes = nodes
+            .unwrap_or_default()
             .iter()
             .map(|node| (node.name.clone(), NodeBaseline::from(node)))
             .collect();
@@ -256,8 +278,8 @@ impl SnapshotState {
     /// only requested while that panel is on screen (see `App::start_fetch`),
     /// so the node baseline is otherwise empty and would never fill in.
     ///
-    /// Rows that have disappeared are dropped so neither map outlives the
-    /// cluster. This is the only part of the feature with a cost that scales
+    /// Indices that have disappeared are dropped so the map doesn't outlive
+    /// the cluster; nodes are kept (see below). This is the only part of the feature with a cost that scales
     /// with the cluster — ~2.5ms at 50k indices — and it deliberately sits
     /// here, on the refresh tick, rather than in the render path: the tables
     /// redraw ~20x a second and only ever do a hash lookup per on-screen row,
@@ -303,8 +325,12 @@ impl SnapshotState {
                 }
             }
         }
-        let present: HashSet<&str> = nodes.iter().map(|node| node.name.as_str()).collect();
-        self.nodes.retain(|name, _| present.contains(name.as_str()));
+        // Unlike indices, nodes missing from this reading keep their
+        // baseline. A restarting node typically drops out of `_nodes/stats`
+        // for a tick or two before rejoining under the same name, and its
+        // baseline is exactly what lets the comeback show as `⟲` instead of
+        // starting over unmarked. A cluster has few nodes, so holding on to
+        // one that has left for good costs nothing.
     }
 
     /// How each of an index's numeric columns has moved. Everything comes
@@ -321,7 +347,7 @@ impl SnapshotState {
         // away as a counter restart.
         IndexTrends {
             doc_count: Trend::compare(MetricKind::Gauge, index.doc_count, baseline.doc_count),
-            rate: Trend::compare(MetricKind::Gauge, index.rate_per_sec, baseline.rate_per_sec),
+            rate: rate_trend(index.rate_per_sec, baseline.rate_per_sec),
             size: Trend::compare(MetricKind::Gauge, index.size_bytes, baseline.size_bytes),
         }
     }
@@ -336,7 +362,14 @@ impl SnapshotState {
         // failed indexing operations and breaker trips are cumulative and
         // reset with the node, so they go through `CounterBaseline`.
         NodeTrends {
-            cpu: Trend::compare(MetricKind::Gauge, node.cpu_percent, baseline.cpu_percent),
+            // CPU the node couldn't measure, now or at the snapshot, has no
+            // direction to report.
+            cpu: match (node.cpu_percent, baseline.cpu_percent) {
+                (Some(current), Some(baseline)) => {
+                    Trend::compare(MetricKind::Gauge, current, baseline)
+                }
+                _ => Trend::Unchanged,
+            },
             heap: Trend::compare(
                 MetricKind::Gauge,
                 node.heap_used_percent,
@@ -372,7 +405,7 @@ mod tests {
     fn node(name: &str, cpu_percent: u64, index_failed: u64) -> NodeStats {
         NodeStats {
             name: name.to_string(),
-            cpu_percent,
+            cpu_percent: Some(cpu_percent),
             index_failed,
             ..NodeStats::default()
         }
@@ -393,7 +426,7 @@ mod tests {
     #[test]
     fn test_index_trends_point_each_way_independently() {
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[index("idx", 100, 5.0, 2048)], &[]);
+        snapshot.capture(&[index("idx", 100, 5.0, 2048)], None);
 
         // Docs grew, the rate fell off, the size held exactly still.
         let trends = snapshot.index_trends(&index("idx", 150, 2.5, 2048));
@@ -410,7 +443,7 @@ mod tests {
         // moment, so a value that rises and then partially falls back is
         // still marked as up relative to the snapshot.
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[index("idx", 100, 1.0, 1024)], &[]);
+        snapshot.capture(&[index("idx", 100, 1.0, 1024)], None);
 
         let tick = index("idx", 400, 1.0, 1024);
         snapshot.observe(std::slice::from_ref(&tick), None);
@@ -429,7 +462,7 @@ mod tests {
     #[test]
     fn test_rows_appearing_after_the_snapshot_adopt_their_first_reading() {
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[index("old", 100, 1.0, 1024)], &[]);
+        snapshot.capture(&[index("old", 100, 1.0, 1024)], None);
 
         let fresh = index("new", 500, 9.0, 4096);
         snapshot.observe(&[index("old", 100, 1.0, 1024), fresh.clone()], None);
@@ -448,7 +481,7 @@ mod tests {
     #[test]
     fn test_disappearing_rows_are_dropped_from_the_baseline() {
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[index("a", 1, 1.0, 1), index("b", 2, 2.0, 2)], &[]);
+        snapshot.capture(&[index("a", 1, 1.0, 1), index("b", 2, 2.0, 2)], None);
         assert_eq!(snapshot.indices.len(), 2);
 
         snapshot.observe(&[index("a", 1, 1.0, 1)], None);
@@ -459,16 +492,17 @@ mod tests {
     #[test]
     fn test_unrequested_nodes_leave_the_node_baseline_untouched() {
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[], &[node("node-1", 10, 0)]);
+        snapshot.capture(&[], Some(&[node("node-1", 10, 0)]));
 
         // `None` means the nodes panel wasn't on screen, so `_nodes/stats`
         // was never asked for — quite different from an empty node list.
         snapshot.observe(&[], None);
         assert_eq!(snapshot.node_trends(&node("node-1", 40, 0)).cpu, Trend::Up);
 
-        // An actual empty list does clear it.
+        // Even a reading without the node keeps its baseline: a restarting
+        // node drops out of `_nodes/stats` before it rejoins.
         snapshot.observe(&[], Some(&[]));
-        assert!(snapshot.nodes.is_empty());
+        assert_eq!(snapshot.node_trends(&node("node-1", 40, 0)).cpu, Trend::Up);
     }
 
     #[test]
@@ -477,7 +511,7 @@ mod tests {
         // baseline at all; the first nodes fetch has to supply one, or the
         // nodes panel would never show an arrow.
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[], &[]);
+        snapshot.capture(&[], None);
 
         snapshot.observe(&[], Some(&[node("node-1", 10, 3)]));
         let trends = snapshot.node_trends(&node("node-1", 55, 4));
@@ -491,7 +525,7 @@ mod tests {
         // failure counter goes back to zero, and the old behaviour drew that
         // as `0 ↓` — indistinguishable from failures genuinely falling away.
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[], &[node("node-1", 10, 500)]);
+        snapshot.capture(&[], Some(&[node("node-1", 10, 500)]));
 
         // Accumulating normally.
         let tick = node("node-1", 10, 530);
@@ -516,7 +550,7 @@ mod tests {
         // Counters and gauges must part company only on the way down: CPU is
         // an instantaneous reading, so a fall is a fall.
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[], &[node("node-1", 80, 0)]);
+        snapshot.capture(&[], Some(&[node("node-1", 80, 0)]));
 
         let tick = node("node-1", 20, 0);
         snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
@@ -524,7 +558,7 @@ mod tests {
 
         // Doc count and size are gauges too: they trend up, but deletes and
         // merges shrink them for real and that must not read as a reset.
-        snapshot.capture(&[index("idx", 1000, 1.0, 8192)], &[]);
+        snapshot.capture(&[index("idx", 1000, 1.0, 8192)], None);
         let trends = snapshot.index_trends(&index("idx", 400, 1.0, 2048));
         assert_eq!(trends.doc_count, Trend::Down);
         assert_eq!(trends.size, Trend::Down);
@@ -536,7 +570,7 @@ mod tests {
         // "unchanged" would claim nothing had happened at the exact moment
         // something did.
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[], &[node("node-1", 10, 42)]);
+        snapshot.capture(&[], Some(&[node("node-1", 10, 42)]));
 
         let tick = node("node-1", 10, 0);
         snapshot.observe(&[], Some(std::slice::from_ref(&tick)));
@@ -548,7 +582,7 @@ mod tests {
         assert_eq!(snapshot.node_trends(&tick).index_failed, Trend::Reset);
 
         // A fresh snapshot starts clean.
-        snapshot.capture(&[], &[node("node-1", 10, 0)]);
+        snapshot.capture(&[], Some(&[node("node-1", 10, 0)]));
         assert_eq!(
             snapshot.node_trends(&node("node-1", 10, 0)).index_failed,
             Trend::Unchanged
@@ -560,7 +594,7 @@ mod tests {
         let mut snapshot = SnapshotState::default();
         let mut base = node("node-1", 10, 500);
         base.breaker_parent_tripped = 7;
-        snapshot.capture(&[], &[base]);
+        snapshot.capture(&[], Some(&[base]));
 
         // Only the breaker counter falls; the failure counter keeps climbing.
         let mut tick = node("node-1", 10, 600);
@@ -575,7 +609,10 @@ mod tests {
     #[test]
     fn test_clearing_drops_every_baseline() {
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[index("idx", 100, 1.0, 1024)], &[node("node-1", 10, 0)]);
+        snapshot.capture(
+            &[index("idx", 100, 1.0, 1024)],
+            Some(&[node("node-1", 10, 0)]),
+        );
         assert!(snapshot.is_active());
 
         snapshot.clear();
@@ -596,7 +633,7 @@ mod tests {
     #[test]
     fn test_a_nan_rate_picks_no_direction() {
         let mut snapshot = SnapshotState::default();
-        snapshot.capture(&[index("idx", 1, f64::NAN, 1)], &[]);
+        snapshot.capture(&[index("idx", 1, f64::NAN, 1)], None);
         assert_eq!(
             snapshot.index_trends(&index("idx", 1, 5.0, 1)).rate,
             Trend::Unchanged

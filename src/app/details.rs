@@ -1,10 +1,12 @@
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::elasticsearch::EsClient;
 use crate::models::IndexDetails;
 
-pub type DetailsResult = Result<IndexDetails, String>;
+/// A finished details fetch, tagged with the index it was for: a fetch can
+/// still be in flight when the popup is closed and reopened on another
+/// index, and its result must not land in the new popup.
+pub type DetailsResult = (String, Result<IndexDetails, String>);
 
 pub struct DetailsState {
     pub show_popup: bool,
@@ -50,7 +52,7 @@ impl DetailsState {
     /// reopening after being closed) resets to a clean slate as before.
     pub fn fetch(
         &mut self,
-        es_client: Arc<Mutex<EsClient>>,
+        es_client: EsClient,
         index_name: String,
         doc_count: u64,
         rate_per_sec: f64,
@@ -77,15 +79,11 @@ impl DetailsState {
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
-            let result = {
-                let client = es_client.lock().await;
-                client
-                    .fetch_index_details(&index_name, doc_count, rate_per_sec, size_bytes)
-                    .await
-            };
-
-            let details_result = result.map_err(|e| e.to_string());
-            let _ = tx.send(details_result).await;
+            let result = es_client
+                .fetch_index_details(&index_name, doc_count, rate_per_sec, size_bytes)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send((index_name, result)).await;
         });
     }
 
@@ -101,7 +99,11 @@ impl DetailsState {
 
     pub fn poll(&mut self) {
         match self.rx.try_recv() {
-            Ok(result) => {
+            // Left over from a popup that has since been closed or switched
+            // to another index; the fetch for what's on screen now is still
+            // in flight.
+            Ok((index_name, _)) if self.index_name.as_deref() != Some(index_name.as_str()) => {}
+            Ok((_, result)) => {
                 self.loading = false;
                 self.refreshing = false;
                 match result {

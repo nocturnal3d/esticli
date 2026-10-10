@@ -7,7 +7,7 @@
 # EstiCLI
 **(/ˈɛs.tɪ.kliː/ - like "broccoli"  🥦 but for Elasticsearch)**
 
-[![Release](https://img.shields.io/github/v/release/nocturnal3d/esticli?label=release)](https://github.com/nocturnal3d/esticli/releases/latest) [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Release](https://img.shields.io/github/v/release/nocturnal3d/esticli?label=release)](https://github.com/nocturnal3d/esticli/releases/latest) [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 A `top`-like TUI for real-time monitoring of Elasticsearch index ingestion rates.
 
@@ -39,8 +39,10 @@ cargo build --release
 
 ### Cargo
 
+esticli isn't published on crates.io; install it straight from the repository:
+
 ```bash
-cargo install esticli
+cargo install --git https://github.com/nocturnal3d/esticli
 ```
 
 ## Usage
@@ -52,11 +54,14 @@ esticli --help
 # Connect to remote cluster
 esticli -u https://elasticsearch.example.com:9200
 
-# With basic authentication
-esticli -u https://es.example.com:9200 --username elastic --password secret
+# With basic authentication (the password from the environment keeps it out of `ps`)
+ESTICLI_PASSWORD=secret esticli -u https://es.example.com:9200 --username elastic
 
-# With API key
-esticli -u https://es.example.com:9200 --api-key "base64encodedapikey"
+# With an API key (the base64 "encoded" value Elasticsearch returns)
+ESTICLI_API_KEY="base64encodedapikey" esticli -u https://es.example.com:9200
+
+# Behind a gateway that serves Elasticsearch under a path prefix
+esticli -u https://gateway.example.com/elasticsearch
 
 # Skip TLS verification (development only)
 esticli -u https://localhost:9200 -k
@@ -76,17 +81,20 @@ esticli --rate-samples 5
 
 ### CLI Options
 
-| Option               | Description                             | Default                 |
-|----------------------|-----------------------------------------|-------------------------|
-| `-u, --url <URL>`    | Elasticsearch URL                       | `http://localhost:9200` |
-| `--username <USER>`  | Basic auth username                     | -                       |
-| `--password <PASS>`  | Basic auth password                     | -                       |
-| `--api-key <KEY>`    | API key for authentication              | -                       |
-| `-k, --insecure`     | Skip TLS certificate verification       | `false`                 |
-| `--ca-cert <FILE>`   | Path to CA certificate (PEM format)     | -                       |
-| `--refresh <SECS>`   | Refresh interval in seconds             | `5`                     |
-| `--colormap <NAME>`  | Colormap for gradient (see below)       | `warm`                  |
-| `--rate-samples <N>` | Samples to average for rate calculation | `10`                    |
+| Option               | Environment        | Description                             | Default                 |
+|----------------------|--------------------|-----------------------------------------|-------------------------|
+| `-u, --url <URL>`    | `ESTICLI_URL`      | Elasticsearch URL (path prefix allowed) | `http://localhost:9200` |
+| `--username <USER>`  | `ESTICLI_USERNAME` | Basic auth username                     | -                       |
+| `--password <PASS>`  | `ESTICLI_PASSWORD` | Basic auth password                     | -                       |
+| `--api-key <KEY>`    | `ESTICLI_API_KEY`  | API key for authentication              | -                       |
+| `-k, --insecure`     |                    | Skip TLS certificate verification       | `false`                 |
+| `--ca-cert <FILE>`   | `ESTICLI_CA_CERT`  | Path to CA certificate (PEM format)     | -                       |
+| `--refresh <SECS>`   |                    | Refresh interval in seconds (1-60)      | `5`                     |
+| `--colormap <NAME>`  |                    | Colormap for gradient (see below)       | `warm`                  |
+| `--rate-samples <N>` |                    | Samples to average for rate calculation | `10`                    |
+| `-V, --version`      |                    | Print the version                       |                         |
+
+Command-line arguments are visible to every user on the machine (`ps`), so prefer the environment variables for the password and API key. `--username` and `--password` must be given together.
 
 
 ### Available Colormaps
@@ -132,6 +140,7 @@ esticli --rate-samples 5
 | `Space`     | Pause/resume refresh                      |
 | `?`         | Show help                                 |
 | `q` / `Esc` | Quit                                      |
+| `Ctrl+c`    | Quit (from anywhere, including popups)    |
 
 
 ### Sorting
@@ -150,7 +159,7 @@ esticli --rate-samples 5
 | `2`         | Toggle health visibility             |
 | `3`         | Toggle main table panel visibility   |
 | `n`         | Switch panel between indices/nodes   |
-| `.`         | Toggle system indices (dot-prefixed) |
+| `.`         | Toggle system indices (dot-prefixed; data stream `.ds-*` indices always show) |
 | `+` / `-`   | Increase/decrease refresh interval   |
 | `c` / `C`   | Cycle colormap forward/backward      |
 
@@ -163,7 +172,7 @@ esticli --rate-samples 5
 | `Ctrl+←` / `Ctrl+→`    | Move by word                                    |
 | `Home` / `End`         | Jump to start/end                               |
 | `Backspace` / `Delete` | Delete characters                               |
-| `Ctrl+u`               | Clear filter                                    |
+| `Ctrl+u`               | Clear filter (stays in the filter box)          |
 | `Esc` / `Enter`        | Exit filter input                               |
 | `/` (while box empty)  | Toggle between regex and jq syntax              |
 
@@ -255,8 +264,8 @@ Press `Enter` on any index to view detailed information:
 
 ## Requirements
 
-- Elasticsearch 7.x or 8.x
-- Rust 1.70+ (for building from source)
+- Elasticsearch 7.x, 8.x or 9.x (on 7.x the per-index health column shows `-`: `_stats` only reports it from 8.1)
+- Rust 1.88+ (for building from source)
 - A C compiler and CMake (for building from source — needed by `aws-lc-rs`, the TLS crypto backend; already present on GitHub Actions' `ubuntu-latest` and most dev machines)
 - Terminal with Unicode support
 

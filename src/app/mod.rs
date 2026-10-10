@@ -6,14 +6,15 @@ pub mod sort;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::elasticsearch::stats::RateTracker;
 use crate::elasticsearch::{AuthConfig, EsClient};
-use crate::error::{EstiCliError, Result};
+use crate::error::Result;
 use crate::models::{ClusterHealth, IndexRate, NodeStats};
 use crate::ui::types::Colormap;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use self::actions::Action;
 use self::details::DetailsState;
@@ -25,19 +26,22 @@ use self::sort::{NodeSortState, SortState};
 // exceed the width of a wide terminal or the graph can never fill its panel.
 // At the default 5s refresh, 300 samples is ~25 minutes of history.
 const MAX_HISTORY_POINTS: usize = 300;
-const MIN_REFRESH_SECS: u64 = 1;
-const MAX_REFRESH_SECS: u64 = 60;
+pub const MIN_REFRESH_SECS: u64 = 1;
+pub const MAX_REFRESH_SECS: u64 = 60;
 
-pub type FetchResult = std::result::Result<FetchPayload, EstiCliError>;
-
-/// Everything one refresh tick brings back.
+/// Everything one refresh tick brings back. Each part succeeds or fails on
+/// its own: a `_cluster/health` or `_nodes/stats` failure (a role without the
+/// cluster `monitor` privilege, one unresponsive node) must not stop the
+/// indices table, header rate and graph from updating.
 pub struct FetchPayload {
-    pub indices: Vec<IndexRate>,
-    pub health: ClusterHealth,
+    /// Each index with its raw rate sample for this tick; `None` where there
+    /// is no honest sample yet (see `RateTracker::rates_from_snapshot`).
+    pub indices: Result<Vec<(IndexRate, Option<f64>)>>,
+    pub health: Result<ClusterHealth>,
     /// `None` when the nodes panel wasn't on screen, so `_nodes/stats` was
-    /// never requested — distinct from `Some(vec![])`, which would mean the
-    /// cluster genuinely reported no nodes.
-    pub nodes: Option<Vec<NodeStats>>,
+    /// never requested — distinct from `Some(Ok(vec![]))`, which would mean
+    /// the cluster genuinely reported no nodes.
+    pub nodes: Option<Result<Vec<NodeStats>>>,
 }
 
 /// Which table occupies the main panel. The two are alternatives rather than
@@ -81,7 +85,7 @@ pub struct App {
     pub spinner_frame: usize,
     pub refresh_interval: Duration,
     pub last_refresh: Option<Instant>,
-    pub rate_history: VecDeque<u64>,
+    pub rate_history: VecDeque<f64>,
     pub es_url: String,
     pub fetch_start: Option<Instant>,
     pub last_fetch_duration: Option<Duration>,
@@ -123,9 +127,18 @@ pub struct App {
     pub snapshot: SnapshotState,
 
     index_rate_history: HashMap<String, VecDeque<f64>>,
-    es_client: Arc<Mutex<EsClient>>,
-    fetch_rx: mpsc::Receiver<FetchResult>,
-    fetch_tx: mpsc::Sender<FetchResult>,
+    /// Stateless and cheap to clone: each background task gets its own copy,
+    /// so a details fetch never waits behind a slow polling tick.
+    es_client: EsClient,
+    /// The previous `_stats` reading rates are diffed against. Only the
+    /// polling task touches it, and never across an `.await`.
+    rate_tracker: Arc<Mutex<RateTracker>>,
+    /// Set when something wants a fresh fetch while one is already in
+    /// flight (switching to the nodes panel mid-fetch): that fetch didn't
+    /// ask for what is now needed, so another starts as soon as it lands.
+    refetch_pending: bool,
+    fetch_rx: mpsc::Receiver<FetchPayload>,
+    fetch_tx: mpsc::Sender<FetchPayload>,
 }
 
 impl App {
@@ -141,7 +154,7 @@ impl App {
         colormap: Colormap,
         rate_samples: usize,
     ) -> Result<Self> {
-        let es_client = EsClient::new(base_url.clone(), auth, insecure, ca_cert)?;
+        let es_client = EsClient::new(&base_url, auth, insecure, ca_cert)?;
         let (fetch_tx, fetch_rx) = mpsc::channel(1);
 
         Ok(Self {
@@ -153,7 +166,7 @@ impl App {
             refresh_interval: Duration::from_secs(refresh_secs),
             last_refresh: None,
             rate_history: VecDeque::with_capacity(MAX_HISTORY_POINTS),
-            es_url: base_url,
+            es_url: es_client.display_url(),
             fetch_start: None,
             last_fetch_duration: None,
             show_graph: true,
@@ -181,7 +194,9 @@ impl App {
             snapshot: SnapshotState::default(),
 
             index_rate_history: HashMap::new(),
-            es_client: Arc::new(Mutex::new(es_client)),
+            es_client,
+            rate_tracker: Arc::new(Mutex::new(RateTracker::default())),
+            refetch_pending: false,
             fetch_rx,
             fetch_tx,
         })
@@ -207,14 +222,19 @@ impl App {
     /// (excluded indices, system indices, jq filter). This is the single
     /// source of truth for "is this index shown" — `visible_summary` and
     /// `filtered_indices` both delegate to it so the checks can't drift.
+    ///
+    /// The filter box applies to whichever table is in the main panel, so a
+    /// node-name filter typed on the nodes panel must not also narrow the
+    /// indices — that would silently zero the header's rate and the graph,
+    /// which are computed from this set whichever panel is showing.
     fn is_visible(&self, index: &IndexRate) -> bool {
         if self.excluded_indices.contains(&index.name) {
             return false;
         }
-        if !self.show_system_indices && index.name.starts_with('.') {
+        if !self.show_system_indices && is_system_index(&index.name) {
             return false;
         }
-        self.filter.is_match(index)
+        self.main_panel != MainPanel::Indices || self.filter.is_match(index)
     }
 
     /// Computes the visible indices and their aggregated cluster metrics in
@@ -254,7 +274,8 @@ impl App {
 
         self.loading = true;
         self.fetch_start = Some(Instant::now());
-        let client = Arc::clone(&self.es_client);
+        let client = self.es_client.clone();
+        let tracker = Arc::clone(&self.rate_tracker);
         let tx = self.fetch_tx.clone();
         // `_nodes/stats` is only worth requesting while its panel is on
         // screen; the indices/health calls stay unconditional because the
@@ -263,17 +284,20 @@ impl App {
         let want_nodes = self.nodes_focused();
 
         tokio::spawn(async move {
-            let result = {
-                let mut client = client.lock().await;
-                client.fetch_tick(want_nodes).await
-            };
+            let tick = client.fetch_tick(want_nodes).await;
+            let indices = tick.snapshot.map(|(now, snapshot)| {
+                tracker
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .rates_from_snapshot(now, snapshot)
+            });
 
             let _ = tx
-                .send(result.map(|(indices, health, nodes)| FetchPayload {
+                .send(FetchPayload {
                     indices,
-                    health,
-                    nodes,
-                }))
+                    health: tick.health,
+                    nodes: tick.nodes,
+                })
                 .await;
         });
     }
@@ -281,7 +305,7 @@ impl App {
     // Check for fetch results (non-blocking)
     pub fn poll_fetch_result(&mut self) {
         match self.fetch_rx.try_recv() {
-            Ok(result) => {
+            Ok(payload) => {
                 self.loading = false;
                 self.last_refresh = Some(Instant::now());
 
@@ -289,59 +313,14 @@ impl App {
                     self.last_fetch_duration = Some(start.elapsed());
                 }
 
-                match result {
-                    Ok(payload) => {
-                        let FetchPayload {
-                            mut indices,
-                            health,
-                            nodes,
-                        } = payload;
+                self.apply_fetch(payload);
 
-                        self.update_indices_with_rates(&mut indices);
-                        self.sort.sort(&mut indices);
-                        self.indices = indices;
-                        self.cluster_health = health;
-                        self.error = None;
-
-                        // `None` means the request was skipped because the
-                        // panel is hidden, so the last known nodes stay put.
-                        let nodes_fetched = nodes.is_some();
-                        if let Some(mut nodes) = nodes {
-                            self.node_sort.sort(&mut nodes);
-                            self.nodes = nodes;
-                            self.clamp_node_selection();
-                        }
-
-                        // Reconcile the snapshot baseline with what the
-                        // cluster now reports: rows that have appeared since
-                        // adopt this reading, rows that have gone are dropped.
-                        // Node stats are only offered when they were actually
-                        // requested this tick.
-                        let observed_nodes = nodes_fetched.then_some(self.nodes.as_slice());
-                        self.snapshot.observe(&self.indices, observed_nodes);
-
-                        // Prune index_rate_history for indices that no longer exist
-                        let current_index_names: HashSet<String> =
-                            self.indices.iter().map(|i| i.name.clone()).collect();
-                        self.index_rate_history
-                            .retain(|name, _| current_index_names.contains(name));
-
-                        self.clamp_selection();
-
-                        let total_rate = self.total_cluster_rate() as u64;
-                        if self.rate_history.len() >= MAX_HISTORY_POINTS {
-                            self.rate_history.pop_front();
-                        }
-                        self.rate_history.push_back(total_rate);
-
-                        // Keep an open details popup live: refresh it in
-                        // step with the main list instead of leaving it
-                        // frozen at whatever it showed when it was opened.
-                        self.refresh_open_details();
-                    }
-                    Err(e) => {
-                        self.error = Some(e.to_string());
-                    }
+                // Something asked for fresh data while this fetch was in
+                // flight; start the next one now rather than a full refresh
+                // interval later.
+                if self.refetch_pending {
+                    self.refetch_pending = false;
+                    self.last_refresh = None;
                 }
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
@@ -352,23 +331,128 @@ impl App {
         }
     }
 
-    fn update_indices_with_rates(&mut self, indices: &mut [IndexRate]) {
-        for index in indices {
-            let history = self
-                .index_rate_history
-                .entry(index.name.clone())
-                .or_insert_with(|| VecDeque::with_capacity(self.rate_samples));
+    /// Applies whichever parts of a tick succeeded and reports the ones that
+    /// didn't, most important first.
+    fn apply_fetch(&mut self, payload: FetchPayload) {
+        let FetchPayload {
+            indices,
+            health,
+            nodes,
+        } = payload;
+        let mut errors = Vec::new();
 
-            if history.len() >= self.rate_samples {
-                history.pop_front();
+        let indices_fetched = match indices {
+            Ok(rates) => {
+                let mut indices = self.update_indices_with_rates(rates);
+                self.sort.sort(&mut indices);
+                self.indices = indices;
+                true
             }
-            history.push_back(index.rate_per_sec);
+            Err(e) => {
+                errors.push(e.to_string());
+                false
+            }
+        };
 
-            if !history.is_empty() {
-                let sum: f64 = history.iter().sum();
-                index.rate_per_sec = sum / history.len() as f64;
+        match health {
+            Ok(health) => self.cluster_health = health,
+            Err(e) => errors.push(format!("cluster health: {}", e)),
+        }
+
+        // `None` means the request was skipped because the panel is hidden,
+        // so the last known nodes stay put; a failed request leaves them put
+        // too.
+        let nodes_fetched = match nodes {
+            Some(Ok(mut nodes)) => {
+                self.node_sort.sort(&mut nodes);
+                self.nodes = nodes;
+                self.clamp_node_selection();
+                true
+            }
+            Some(Err(e)) => {
+                errors.push(format!("nodes: {}", e));
+                false
+            }
+            None => false,
+        };
+
+        // When the cluster can't be reached at all, every section fails with
+        // the same message; say it once.
+        let mut unique: Vec<String> = Vec::new();
+        for error in errors {
+            let repeated = unique
+                .iter()
+                .any(|seen| error.ends_with(seen.as_str()) || seen.ends_with(error.as_str()));
+            if !repeated {
+                unique.push(error);
             }
         }
+        self.error = (!unique.is_empty()).then(|| unique.join(" · "));
+
+        // Reconcile the snapshot baseline with what the cluster now reports:
+        // rows that have appeared since adopt this reading, rows that have
+        // gone are dropped. Node stats are only offered when they were
+        // actually fetched this tick.
+        let observed_nodes = nodes_fetched.then_some(self.nodes.as_slice());
+        self.snapshot.observe(&self.indices, observed_nodes);
+
+        if !indices_fetched {
+            return;
+        }
+
+        // Prune index_rate_history for indices that no longer exist
+        let current_index_names: HashSet<&str> =
+            self.indices.iter().map(|i| i.name.as_str()).collect();
+        self.index_rate_history
+            .retain(|name, _| current_index_names.contains(name.as_str()));
+
+        self.clamp_selection();
+
+        let total_rate = self.total_cluster_rate();
+        if self.rate_history.len() >= MAX_HISTORY_POINTS {
+            self.rate_history.pop_front();
+        }
+        self.rate_history.push_back(total_rate);
+
+        // Keep an open details popup live: refresh it in step with the main
+        // list instead of leaving it frozen at whatever it showed when it was
+        // opened.
+        self.refresh_open_details();
+    }
+
+    /// Smooths each index's raw rate sample into its rolling average.
+    ///
+    /// A tick with no sample for an index (its first appearance, a counter
+    /// that went backwards) adds nothing to the window: averaging in a
+    /// placeholder 0 would under-report a busy index for `rate_samples`
+    /// ticks after startup and after every rollover.
+    fn update_indices_with_rates(
+        &mut self,
+        rates: Vec<(IndexRate, Option<f64>)>,
+    ) -> Vec<IndexRate> {
+        rates
+            .into_iter()
+            .map(|(mut index, sample)| {
+                let history = self
+                    .index_rate_history
+                    .entry(index.name.clone())
+                    .or_insert_with(|| VecDeque::with_capacity(self.rate_samples));
+
+                if let Some(sample) = sample {
+                    if history.len() >= self.rate_samples {
+                        history.pop_front();
+                    }
+                    history.push_back(sample);
+                }
+
+                index.rate_per_sec = if history.is_empty() {
+                    0.0
+                } else {
+                    history.iter().sum::<f64>() / history.len() as f64
+                };
+                index
+            })
+            .collect()
     }
 
     // Get the current fetch elapsed time (while loading) or last fetch duration
@@ -491,12 +575,25 @@ impl App {
         };
         self.show_main_panel = true;
 
-        // Nothing has been fetched for a panel that has never been focused,
-        // so pull it in on the next loop iteration instead of leaving the
-        // table empty until the current interval elapses.
-        if self.nodes_focused() && self.nodes.is_empty() {
-            self.last_refresh = None;
+        // The node readings on hand are from the last time this panel was
+        // up, if ever, so pull fresh ones in on the next loop iteration
+        // instead of leaving stale (or no) rows until the interval elapses.
+        // A fetch already in flight didn't ask for nodes, so if there is one
+        // another is queued straight behind it.
+        if self.nodes_focused() {
+            if self.loading {
+                self.refetch_pending = true;
+            } else {
+                self.last_refresh = None;
+            }
         }
+    }
+
+    /// Whether the indices table is the one on screen. Actions on the
+    /// selected index (details, exclusion) only make sense then; otherwise
+    /// they would act on an off-screen selection the user can't see.
+    pub fn indices_focused(&self) -> bool {
+        self.show_main_panel && self.main_panel == MainPanel::Indices
     }
 
     /// Whether the nodes panel is the one currently on screen. Gates the
@@ -694,6 +791,9 @@ impl App {
 
     // Details delegation
     pub fn show_index_details(&mut self) {
+        if !self.indices_focused() {
+            return;
+        }
         let Some(name) = self.selected_name.clone() else {
             return;
         };
@@ -765,6 +865,9 @@ impl App {
     }
 
     pub fn toggle_exclude_selected(&mut self) {
+        if !self.indices_focused() {
+            return;
+        }
         let Some(name) = self.selected_name.clone() else {
             return;
         };
@@ -804,11 +907,14 @@ impl App {
     ///
     /// Both panels are captured at once, not just the one on screen, so
     /// switching views after taking a snapshot shows movement from the same
-    /// moment. The nodes half is empty if that panel has never been focused
-    /// (`_nodes/stats` isn't requested until it is); `SnapshotState::observe`
-    /// fills it in on the first fetch that does happen.
+    /// moment. Node readings are only current while the nodes panel is up
+    /// (`_nodes/stats` isn't requested otherwise), so when it isn't, the node
+    /// half is left for `SnapshotState::observe` to fill in from the first
+    /// fetch that requests nodes, rather than freezing whatever the panel
+    /// showed the last time it was open.
     pub fn take_snapshot(&mut self) {
-        self.snapshot.capture(&self.indices, &self.nodes);
+        let fresh_nodes = self.nodes_focused().then_some(self.nodes.as_slice());
+        self.snapshot.capture(&self.indices, fresh_nodes);
     }
 
     pub fn clear_snapshot(&mut self) {
@@ -879,6 +985,24 @@ impl App {
             Action::DetailsScrollPageDown(page_size) => self.details_scroll_page_down(page_size),
         }
     }
+}
+
+/// Whether an index is hidden by default as a system index (toggled with
+/// `.`).
+///
+/// Dot-prefixed names are Elasticsearch's convention for internal indices —
+/// except data stream backing indices (`.ds-<stream>-…`) and failure-store
+/// indices (`.fs-<stream>-…`), which hold whatever was written to the data
+/// stream. On a cluster fed by Elastic Agent, Logstash or OpenTelemetry those
+/// are where nearly all ingestion lands, so hiding them would leave the
+/// header rate and graph reporting a fraction of the real traffic. They count
+/// as system only when the stream itself is (`.ds-.logs-deprecation…`).
+fn is_system_index(name: &str) -> bool {
+    let name = name
+        .strip_prefix(".ds-")
+        .or_else(|| name.strip_prefix(".fs-"))
+        .unwrap_or(name);
+    name.starts_with('.')
 }
 
 #[cfg(test)]
@@ -1070,6 +1194,29 @@ mod tests {
     }
 
     #[test]
+    fn test_snapshot_off_the_nodes_panel_does_not_freeze_stale_nodes() {
+        let mut app = setup_mock_app();
+        // Readings left over from the last time the nodes panel was open.
+        app.nodes = vec![mock_node("node-a", 10)];
+        app.handle_action(Action::TakeSnapshot);
+
+        // Those were never "now", so nothing is compared against them...
+        app.nodes[0].heap_used_percent = 90;
+        assert_eq!(
+            app.snapshot.node_trends(&app.nodes[0]).heap,
+            snapshot::Trend::Unchanged
+        );
+
+        // ...and the first real nodes fetch becomes the node baseline.
+        app.snapshot.observe(&app.indices, Some(&app.nodes));
+        app.nodes[0].heap_used_percent = 95;
+        assert_eq!(
+            app.snapshot.node_trends(&app.nodes[0]).heap,
+            snapshot::Trend::Up
+        );
+    }
+
+    #[test]
     fn test_snapshot_marks_movement_in_both_panels_from_one_baseline() {
         let mut app = setup_mock_app();
         app.nodes = vec![mock_node("node-a", 10), mock_node("node-b", 20)];
@@ -1081,6 +1228,8 @@ mod tests {
             snapshot::Trend::Unchanged
         );
 
+        // Taken from the nodes panel, where the node readings are current.
+        app.handle_action(Action::ToggleNodes);
         app.handle_action(Action::TakeSnapshot);
         assert!(app.snapshot.is_active());
         assert!(app.snapshot.taken_at().is_some());
@@ -1101,7 +1250,7 @@ mod tests {
             snapshot::Trend::Unchanged
         );
 
-        // The same press captured the nodes panel, so switching to it after
+        // The same press captured the indices too, so switching back after
         // the fact still shows movement from that same moment.
         app.nodes[0].heap_used_percent = 90;
         assert_eq!(
@@ -1250,5 +1399,104 @@ mod tests {
         app.show_system_indices = false;
         app.excluded_indices.insert("index-1".to_string());
         assert_eq!(app.total_cluster_rate(), 5.0); // 2.0 + 3.0
+    }
+
+    #[test]
+    fn test_data_stream_backing_indices_are_not_system_indices() {
+        let mut app = setup_mock_app();
+        let with_rate = |name: &str, rate_per_sec: f64| IndexRate {
+            name: name.to_string(),
+            doc_count: 1,
+            rate_per_sec,
+            size_bytes: 1,
+            health: "green".to_string(),
+        };
+        app.indices
+            .push(with_rate(".ds-logs-app-default-2026.10.10-000001", 100.0));
+        app.indices
+            .push(with_rate(".fs-logs-app-default-2026.10.10-000002", 1000.0));
+        app.indices.push(with_rate(
+            ".ds-.logs-deprecation-2026.10.10-000001",
+            10_000.0,
+        ));
+        app.indices.push(with_rate(".kibana_1", 100_000.0));
+
+        // User data streams count towards the cluster rate by default; the
+        // internal ones (and a dot-named stream) stay behind the `.` toggle.
+        assert_eq!(app.total_cluster_rate(), 6.0 + 100.0 + 1000.0);
+    }
+
+    #[test]
+    fn test_node_filter_does_not_narrow_the_indices() {
+        let mut app = setup_mock_app();
+        app.nodes = vec![mock_node("es-hot-1", 10)];
+        app.toggle_nodes();
+        app.filter.input = app.filter.input.clone().with_value("hot".to_string());
+        app.filter.recompile();
+
+        // Typed on the nodes panel, so the header rate and graph (computed
+        // from the indices) must not drop to zero.
+        assert_eq!(app.visible_nodes().len(), 1);
+        assert_eq!(app.total_cluster_rate(), 6.0);
+
+        // Back on the indices panel the same box filters indices.
+        app.toggle_nodes();
+        assert_eq!(app.total_cluster_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_index_actions_do_nothing_on_the_nodes_panel() {
+        let mut app = setup_mock_app();
+        app.select_first();
+        app.toggle_nodes();
+
+        // The index selection is off screen; acting on it would surprise.
+        app.handle_action(Action::ToggleExclude);
+        app.handle_action(Action::ShowDetails);
+        assert!(app.excluded_indices.is_empty());
+        assert!(!app.details.show_popup);
+    }
+
+    #[test]
+    fn test_rate_smoothing_ignores_ticks_without_a_sample() {
+        let mut app = setup_mock_app();
+        let index = app.indices[0].clone();
+
+        // First sighting: no sample yet, and nothing enters the window.
+        let rates = app.update_indices_with_rates(vec![(index.clone(), None)]);
+        assert_eq!(rates[0].rate_per_sec, 0.0);
+
+        // The first real sample is the average, not half of it.
+        let rates = app.update_indices_with_rates(vec![(index, Some(10.0))]);
+        assert_eq!(rates[0].rate_per_sec, 10.0);
+    }
+
+    #[test]
+    fn test_a_failing_section_does_not_discard_the_rest_of_the_tick() {
+        use crate::error::EstiCliError;
+
+        let mut app = setup_mock_app();
+        let fresh = IndexRate {
+            name: "fresh".to_string(),
+            doc_count: 1,
+            rate_per_sec: 0.0,
+            size_bytes: 1,
+            health: "green".to_string(),
+        };
+        app.apply_fetch(FetchPayload {
+            indices: Ok(vec![(fresh, Some(4.0))]),
+            health: Err(EstiCliError::Config("forbidden".to_string())),
+            nodes: Some(Err(EstiCliError::Config("timed out".to_string()))),
+        });
+
+        assert_eq!(app.indices.len(), 1);
+        assert_eq!(app.indices[0].name, "fresh");
+        assert_eq!(app.rate_history.back().copied(), Some(4.0));
+        let error = app.error.as_deref().unwrap();
+        assert!(
+            error.contains("cluster health") && error.contains("nodes"),
+            "{}",
+            error
+        );
     }
 }

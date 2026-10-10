@@ -148,6 +148,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let mut table_offset = app.table_offset;
     let mut node_table_offset = app.node_table_offset;
 
+    // Popup scroll positions are held to what the content can actually
+    // scroll, so presses past the end don't pile up as dead keys that have
+    // to be undone before scrolling back does anything.
+    if app.details.show_popup {
+        app.details.scroll = app
+            .details
+            .scroll
+            .min(details_popup::max_scroll(app, frame.area()));
+    }
+    if app.show_help_popup {
+        app.help_scroll = app.help_scroll.min(help_popup::max_scroll(frame.area()));
+    }
+
     {
         let areas = compute_areas(frame.area(), app);
         // Filter once per frame and share the result across every widget that

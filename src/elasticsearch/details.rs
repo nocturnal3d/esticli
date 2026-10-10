@@ -13,30 +13,55 @@ pub async fn fetch_index_details(
     rate_per_sec: f64,
     size_bytes: u64,
 ) -> Result<IndexDetails> {
-    // Prepare all requests
+    // Prepare all requests. The index name always goes in as its own
+    // encoded path segment — see `EsClient::endpoint`.
     let settings_req = client
         .client
-        .get(client.base_url.join(&format!("{}/_settings", index_name))?);
-    let ilm_req = client.client.get(
-        client
-            .base_url
-            .join(&format!("_ilm/explain/{}", index_name))?,
+        .get(client.endpoint(&[index_name, "_settings"]));
+    let ilm_req = client
+        .client
+        .get(client.endpoint(&[index_name, "_ilm", "explain"]));
+    let segments_req = client
+        .client
+        .get(client.endpoint(&[index_name, "_stats", "segments"]));
+
+    let mut shards_url = client.endpoint(&["_cat", "shards", index_name]);
+    shards_url
+        .query_pairs_mut()
+        .append_pair("format", "json")
+        .append_pair("h", "index,shard,prirep,state,docs,store,node");
+    let shards_req = client.client.get(shards_url);
+
+    // The two cluster-wide listings are narrowed to the fields read below:
+    // on a Fleet-managed cluster each is hundreds of kilobytes otherwise,
+    // fetched again on every refresh while the popup is open.
+    let mut templates_url = client.endpoint(&["_index_template"]);
+    templates_url.query_pairs_mut().append_pair(
+        "filter_path",
+        "index_templates.name,\
+index_templates.index_template.index_patterns,\
+index_templates.index_template.priority",
     );
-    let segments_req = client.client.get(
-        client
-            .base_url
-            .join(&format!("{}/_stats/segments", index_name))?,
+    let templates_req = client.client.get(templates_url);
+
+    let mut cat_url = client.endpoint(&["_cat", "indices", index_name]);
+    cat_url
+        .query_pairs_mut()
+        .append_pair("format", "json")
+        .append_pair("h", "health,status,index");
+    let cat_req = client.client.get(cat_url);
+
+    let mut ds_url = client.endpoint(&["_data_stream"]);
+    ds_url.query_pairs_mut().append_pair(
+        "filter_path",
+        "data_streams.name,\
+data_streams.timestamp_field.name,\
+data_streams.indices.index_name,\
+data_streams.generation,\
+data_streams.template,\
+data_streams.lifecycle.data_retention",
     );
-    let shards_req = client.client.get(client.base_url.join(&format!(
-        "_cat/shards/{}?format=json&h=index,shard,prirep,state,docs,store,node",
-        index_name
-    ))?);
-    let templates_req = client.client.get(client.base_url.join("_index_template")?);
-    let cat_req = client.client.get(client.base_url.join(&format!(
-        "_cat/indices/{}?format=json&h=health,status,index",
-        index_name
-    ))?);
-    let ds_req = client.client.get(client.base_url.join("_data_stream")?);
+    let ds_req = client.client.get(ds_url);
 
     // Execute requests in parallel
     let (settings_res, ilm_res, segments_res, shards_res, templates_res, cat_res, ds_res) = tokio::join!(
@@ -94,23 +119,6 @@ pub async fn fetch_index_details(
         })
         .collect();
 
-    // Process templates
-    let templates = templates_res
-        .map(|tmpl_resp| {
-            tmpl_resp
-                .index_templates
-                .into_iter()
-                .filter(|t| {
-                    t.index_template
-                        .index_patterns
-                        .iter()
-                        .any(|pattern| pattern_matches(pattern, index_name))
-                })
-                .map(|t| t.name)
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Process health/status
     let (health, status) = cat_res
         .ok()
@@ -146,6 +154,35 @@ pub async fn fetch_index_details(
         })
     });
 
+    // Process templates. A data stream's backing indices were created from
+    // the template that matched the *stream's* name, which the data stream
+    // reports itself; matching the `.ds-…` backing index name against the
+    // patterns would never find it. Otherwise list every template whose
+    // patterns match, the one Elasticsearch actually applies (highest
+    // priority) first.
+    let templates = match data_stream.as_ref().and_then(|ds| ds.template.clone()) {
+        Some(template) => vec![template],
+        None => {
+            let mut matching: Vec<(u64, String)> = templates_res
+                .map(|tmpl_resp| {
+                    tmpl_resp
+                        .index_templates
+                        .into_iter()
+                        .filter(|t| {
+                            t.index_template
+                                .index_patterns
+                                .iter()
+                                .any(|pattern| pattern_matches(pattern, index_name))
+                        })
+                        .map(|t| (t.index_template.priority.unwrap_or(0), t.name))
+                        .collect()
+                })
+                .unwrap_or_default();
+            matching.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            matching.into_iter().map(|(_, name)| name).collect()
+        }
+    };
+
     // Parse specific settings fields
     let creation_date = index_settings
         .and_then(|s| s.settings.index.creation_date.as_ref())
@@ -170,11 +207,19 @@ pub async fn fetch_index_details(
         .map(|f| f == "true")
         .unwrap_or(false);
 
+    let is_searchable_snapshot = index_settings
+        .and_then(|s| s.settings.index.store.as_ref())
+        .and_then(|store| store.store_type.as_deref())
+        .is_some_and(|store_type| store_type == "snapshot");
+
+    // Only a partially mounted (frozen tier) searchable snapshot sets
+    // `index.store.snapshot.partial`; a fully mounted one has the same
+    // `snapshot` store type without it.
     let is_partial = index_settings
         .and_then(|s| s.settings.index.store.as_ref())
-        .and_then(|store| store.store_type.as_ref())
-        .map(|t| t.contains("snapshot") || t.contains("searchable"))
-        .unwrap_or(false);
+        .and_then(|store| store.snapshot.as_ref())
+        .and_then(|snapshot| snapshot.partial.as_deref())
+        .is_some_and(|partial| partial == "true");
 
     let uuid = index_settings.and_then(|s| s.settings.index.uuid.clone());
     let provided_name = index_settings.and_then(|s| s.settings.index.provided_name.clone());
@@ -186,6 +231,7 @@ pub async fn fetch_index_details(
         primary_shards,
         replica_shards,
         is_frozen,
+        is_searchable_snapshot,
         is_partial,
         ilm_policy,
         ilm_phase,
@@ -202,19 +248,55 @@ pub async fn fetch_index_details(
     })
 }
 
-// Simple glob pattern matching for index templates
+/// Matches an index name against an index template pattern, where `*` stands
+/// for any run of characters (including none) — Elasticsearch's own rule.
+/// Built-in patterns put wildcards anywhere (`logs-*-*`,
+/// `metrics-*.otel-*`), so handling only a leading or trailing one misses
+/// them.
 fn pattern_matches(pattern: &str, index_name: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
+    let mut parts = pattern.split('*');
+    // `split` always yields at least one part.
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = index_name.strip_prefix(first) else {
+        return false;
+    };
 
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return index_name.starts_with(prefix);
-    }
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        // No `*` at all: the whole pattern had to match exactly.
+        return rest.is_empty();
+    };
 
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return index_name.ends_with(suffix);
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
     }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
 
-    pattern == index_name
+#[cfg(test)]
+mod tests {
+    use super::pattern_matches;
+
+    #[test]
+    fn test_pattern_matches_wildcards_anywhere() {
+        assert!(pattern_matches("*", "anything"));
+        assert!(pattern_matches("logs-*", "logs-app"));
+        assert!(pattern_matches("*-logs", "app-logs"));
+        assert!(pattern_matches("logs-*-*", "logs-nginx.access-default"));
+        assert!(pattern_matches(
+            "metrics-*.otel-*",
+            "metrics-hostmetrics.otel-default"
+        ));
+        assert!(pattern_matches("exact", "exact"));
+        assert!(pattern_matches("a*b*c", "abc"));
+
+        assert!(!pattern_matches("logs-*-*", "logs-nodash"));
+        assert!(!pattern_matches("exact", "exactly"));
+        assert!(!pattern_matches("a*b*c", "acb"));
+        // The prefix and suffix may not overlap.
+        assert!(!pattern_matches("ab*ba", "aba"));
+    }
 }

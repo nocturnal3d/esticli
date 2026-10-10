@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
 
 use super::theme;
@@ -21,278 +21,14 @@ impl<'a> HelpPopup<'a> {
 
 impl<'a> Widget for HelpPopup<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate popup area
-        let popup_width = (area.width as f32 * 0.6).min(90.0) as u16;
-        let popup_height = (area.height as f32 * 0.8).min(40.0) as u16;
-        let popup_x = (area.width - popup_width) / 2;
-        let popup_y = (area.height - popup_height) / 2;
-
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+        let popup_area = popup_area(area);
 
         // Clear the popup area
         Clear.render(popup_area, buf);
 
-        let help_lines = vec![
-            Line::from(Span::styled("Keyboard Shortcuts", theme::TITLE)),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Navigation",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled("  j/↓       ", Style::new().fg(Color::Green)),
-                Span::raw("Move selection down"),
-            ]),
-            Line::from(vec![
-                Span::styled("  k/↑       ", Style::new().fg(Color::Green)),
-                Span::raw("Move selection up"),
-            ]),
-            Line::from(vec![
-                Span::styled("  PgUp/PgDn ", Style::new().fg(Color::Green)),
-                Span::raw("Page up/down"),
-            ]),
-            Line::from(vec![
-                Span::styled("  g/Home    ", Style::new().fg(Color::Green)),
-                Span::raw("Go to first row"),
-            ]),
-            Line::from(vec![
-                Span::styled("  G/End     ", Style::new().fg(Color::Green)),
-                Span::raw("Go to last row"),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Actions",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled("  Enter     ", Style::new().fg(Color::Green)),
-                Span::raw("Show index details"),
-            ]),
-            Line::from(vec![
-                Span::styled("  x         ", Style::new().fg(Color::Green)),
-                Span::raw("Exclude/include selected index from stats"),
-            ]),
-            Line::from(vec![
-                Span::styled("  X         ", Style::new().fg(Color::Green)),
-                Span::raw("Clear all exclusions"),
-            ]),
-            Line::from(vec![
-                Span::styled("  s         ", Style::new().fg(Color::Green)),
-                Span::raw("Snapshot current values as a comparison baseline"),
-            ]),
-            Line::from(vec![
-                Span::styled("  S         ", Style::new().fg(Color::Green)),
-                Span::raw("Clear the snapshot baseline"),
-            ]),
-            Line::from(vec![
-                Span::styled("  /         ", Style::new().fg(Color::Green)),
-                Span::raw("Enter filter mode (regex on name)"),
-            ]),
-            Line::from(vec![
-                Span::styled("  //        ", Style::new().fg(Color::Green)),
-                Span::raw("Switch filter to jq mode"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Space     ", Style::new().fg(Color::Green)),
-                Span::raw("Pause/resume refresh"),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Filter Mode",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled("  ←/→       ", Style::new().fg(Color::Green)),
-                Span::raw("Move cursor left/right"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Ctrl+←/→  ", Style::new().fg(Color::Green)),
-                Span::raw("Move cursor by word"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Home/End  ", Style::new().fg(Color::Green)),
-                Span::raw("Jump to start/end of filter"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Backspace ", Style::new().fg(Color::Green)),
-                Span::raw("Delete character before cursor"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Delete    ", Style::new().fg(Color::Green)),
-                Span::raw("Delete character at cursor"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Ctrl+u    ", Style::new().fg(Color::Green)),
-                Span::raw("Clear filter"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Esc/Enter ", Style::new().fg(Color::Green)),
-                Span::raw("Exit filter input"),
-            ]),
-            Line::from(vec![
-                Span::styled("  /         ", Style::new().fg(Color::Green)),
-                Span::raw("(when box is empty) toggle regex/jq mode"),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Sorting",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled("  ←(h)/→(l) ", Style::new().fg(Color::Green)),
-                Span::raw("Change sort column"),
-            ]),
-            Line::from(vec![
-                Span::styled("  r         ", Style::new().fg(Color::Green)),
-                Span::raw("Reverse sort order"),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Display",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled("  1         ", Style::new().fg(Color::Green)),
-                Span::raw("Toggle graph visibility"),
-            ]),
-            Line::from(vec![
-                Span::styled("  2         ", Style::new().fg(Color::Green)),
-                Span::raw("Toggle cluster health visibility"),
-            ]),
-            Line::from(vec![
-                Span::styled("  3         ", Style::new().fg(Color::Green)),
-                Span::raw("Toggle main table panel visibility"),
-            ]),
-            Line::from(vec![
-                Span::styled("  n         ", Style::new().fg(Color::Green)),
-                Span::raw("Switch main panel between indices and nodes"),
-            ]),
-            Line::from(vec![
-                Span::styled("  .         ", Style::new().fg(Color::Green)),
-                Span::raw("Toggle system indices (dot-prefixed)"),
-            ]),
-            Line::from(vec![
-                Span::styled("  +/-       ", Style::new().fg(Color::Green)),
-                Span::raw("Increase/decrease refresh interval"),
-            ]),
-            Line::from(vec![
-                Span::styled("  c/C       ", Style::new().fg(Color::Green)),
-                Span::raw("Cycle colormap forward/backward"),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  q/Esc     ", Style::new().fg(Color::Green)),
-                Span::raw("Quit / Close popup"),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled("Snapshots", theme::TITLE)),
-            Line::from(""),
-            Line::from("  Press s to freeze every metric in both panels at this moment. Each"),
-            Line::from("  later refresh is compared against that frozen baseline — not against"),
-            Line::from("  the previous tick — and any metric that has moved gets an arrow:"),
-            Line::from(vec![
-                Span::raw("    "),
-                Span::styled("↑", theme::TREND_UP),
-                Span::raw("  higher than the snapshot     "),
-                Span::styled("↓", theme::TREND_DOWN),
-                Span::raw("  lower than the snapshot"),
-            ]),
-            Line::from(vec![
-                Span::raw("    "),
-                Span::styled("⟲", theme::TREND_RESET),
-                Span::raw("  counter restarted (see below)"),
-            ]),
-            Line::from("  A metric with no arrow is exactly where it was — including one that"),
-            Line::from("  moved and came back, since the comparison is against the snapshot"),
-            Line::from("  rather than against the previous refresh. Pressing s again"),
-            Line::from("  re-baselines from now; S drops the baseline and the arrows with it."),
-            Line::from(""),
-            Line::from("  IdxFailed and BrkTripd are cumulative counters that only reset when"),
-            Line::from("  the node does, so they never show a down arrow — a fall there means"),
-            Line::from("  the node restarted, which is shown as ⟲ and re-baselined so that"),
-            Line::from("  failures after the restart are visible straight away. Every other"),
-            Line::from("  metric, doc counts and sizes included, moves both ways for real."),
-            Line::from("  Rows that appear after the snapshot take their first reading as their"),
-            Line::from("  baseline, so they start unmarked — including nodes, which aren't"),
-            Line::from("  fetched at all until the nodes panel has been on screen."),
-            Line::from(""),
-            Line::from(Span::styled("Filter Syntax", theme::TITLE)),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Regex mode (default, via /)",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  Type a plain regex — it's matched against the index name only."),
-            Line::from(vec![
-                Span::styled("  idx-1                ", Style::new().fg(Color::Cyan)),
-                Span::raw("Name contains 'idx-1'"),
-            ]),
-            Line::from(vec![
-                Span::styled("  ^\\.                  ", Style::new().fg(Color::Cyan)),
-                Span::raw("Name starts with '.'"),
-            ]),
-            Line::from(vec![
-                Span::styled("  idx-[0-9]+           ", Style::new().fg(Color::Cyan)),
-                Span::raw("Name matches pattern"),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "  jq mode (via //)",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  Type a jq boolean expression — it's wrapped in select(...) for you."),
-            Line::from(vec![
-                Span::styled("  Fields:   ", Style::new().fg(Color::Yellow)),
-                Span::raw(".name, .doc_count, .rate_per_sec, .health, .size_bytes"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  .name == \"idx-1\"         ",
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::raw("Exact name match"),
-            ]),
-            Line::from(vec![
-                Span::styled("  .doc_count > 1000        ", Style::new().fg(Color::Cyan)),
-                Span::raw("Docs > 1000"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  .health != \"green\"       ",
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::raw("Problematic health"),
-            ]),
-            Line::from(vec![
-                Span::styled("  .rate_per_sec > 5        ", Style::new().fg(Color::Cyan)),
-                Span::raw("High rate"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  .name | contains(\"test\") ",
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::raw("Name contains 'test'"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  .health | match(\"red\")   ",
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::raw("Match health 'red'"),
-            ]),
-            Line::from(""),
-            Line::from(
-                "  Combine with: and, or, not (e.g., .doc_count > 1 and .health == \"red\")",
-            ),
-        ];
+        let scroll = self.app.help_scroll.min(max_scroll(area));
 
-        // Apply scroll offset
-        let visible_height = popup_height.saturating_sub(2) as usize; // Account for border
-        let max_scroll = help_lines.len().saturating_sub(visible_height);
-        let scroll = self.app.help_scroll.min(max_scroll);
-
-        Paragraph::new(help_lines)
+        Paragraph::new(help_lines())
             .block(
                 Block::default()
                     .title(Line::from(vec![
@@ -306,6 +42,291 @@ impl<'a> Widget for HelpPopup<'a> {
                     .border_style(Style::new().fg(Color::Yellow)),
             )
             .scroll((scroll as u16, 0))
+            // Wrapped rather than cut off: at under ~125 columns most of the
+            // explanatory lines would otherwise lose their ends.
+            .wrap(Wrap { trim: false })
             .render(popup_area, buf);
     }
+}
+
+/// Popup area (60% width up to 90 columns, 80% height up to 40 rows,
+/// centered). Shared by `render` and `max_scroll` so they agree.
+fn popup_area(area: Rect) -> Rect {
+    let popup_width = (area.width as f32 * 0.6).min(90.0) as u16;
+    let popup_height = (area.height as f32 * 0.8).min(40.0) as u16;
+    let popup_x = (area.width - popup_width) / 2;
+    let popup_y = (area.height - popup_height) / 2;
+
+    Rect::new(popup_x, popup_y, popup_width, popup_height)
+}
+
+/// How far the help text can scroll in the given terminal area, in wrapped
+/// rows. `ui::draw` clamps the stored scroll position to this.
+pub fn max_scroll(terminal_area: Rect) -> usize {
+    let inner = Block::default()
+        .borders(Borders::ALL)
+        .inner(popup_area(terminal_area));
+    let rows = Paragraph::new(help_lines())
+        .wrap(Wrap { trim: false })
+        .line_count(inner.width);
+    rows.saturating_sub(inner.height as usize)
+}
+
+fn help_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled("Keyboard Shortcuts", theme::TITLE)),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Navigation",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  j/↓       ", Style::new().fg(Color::Green)),
+            Span::raw("Move selection down"),
+        ]),
+        Line::from(vec![
+            Span::styled("  k/↑       ", Style::new().fg(Color::Green)),
+            Span::raw("Move selection up"),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgUp/PgDn ", Style::new().fg(Color::Green)),
+            Span::raw("Page up/down"),
+        ]),
+        Line::from(vec![
+            Span::styled("  g/Home    ", Style::new().fg(Color::Green)),
+            Span::raw("Go to first row"),
+        ]),
+        Line::from(vec![
+            Span::styled("  G/End     ", Style::new().fg(Color::Green)),
+            Span::raw("Go to last row"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Actions",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  Enter     ", Style::new().fg(Color::Green)),
+            Span::raw("Show index details"),
+        ]),
+        Line::from(vec![
+            Span::styled("  x         ", Style::new().fg(Color::Green)),
+            Span::raw("Exclude/include selected index from stats"),
+        ]),
+        Line::from(vec![
+            Span::styled("  X         ", Style::new().fg(Color::Green)),
+            Span::raw("Clear all exclusions"),
+        ]),
+        Line::from(vec![
+            Span::styled("  s         ", Style::new().fg(Color::Green)),
+            Span::raw("Snapshot current values as a comparison baseline"),
+        ]),
+        Line::from(vec![
+            Span::styled("  S         ", Style::new().fg(Color::Green)),
+            Span::raw("Clear the snapshot baseline"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /         ", Style::new().fg(Color::Green)),
+            Span::raw("Filter the panel on screen (regex on name)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  //        ", Style::new().fg(Color::Green)),
+            Span::raw("Switch filter to jq mode"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space     ", Style::new().fg(Color::Green)),
+            Span::raw("Pause/resume refresh"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Filter Mode",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  ←/→       ", Style::new().fg(Color::Green)),
+            Span::raw("Move cursor left/right"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+←/→  ", Style::new().fg(Color::Green)),
+            Span::raw("Move cursor by word"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Home/End  ", Style::new().fg(Color::Green)),
+            Span::raw("Jump to start/end of filter"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Backspace ", Style::new().fg(Color::Green)),
+            Span::raw("Delete character before cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Delete    ", Style::new().fg(Color::Green)),
+            Span::raw("Delete character at cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+u    ", Style::new().fg(Color::Green)),
+            Span::raw("Clear filter (stays in the box)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc/Enter ", Style::new().fg(Color::Green)),
+            Span::raw("Exit filter input"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /         ", Style::new().fg(Color::Green)),
+            Span::raw("(when box is empty) toggle regex/jq mode"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Sorting",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  ←(h)/→(l) ", Style::new().fg(Color::Green)),
+            Span::raw("Change sort column"),
+        ]),
+        Line::from(vec![
+            Span::styled("  r         ", Style::new().fg(Color::Green)),
+            Span::raw("Reverse sort order"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Display",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  1         ", Style::new().fg(Color::Green)),
+            Span::raw("Toggle graph visibility"),
+        ]),
+        Line::from(vec![
+            Span::styled("  2         ", Style::new().fg(Color::Green)),
+            Span::raw("Toggle cluster health visibility"),
+        ]),
+        Line::from(vec![
+            Span::styled("  3         ", Style::new().fg(Color::Green)),
+            Span::raw("Toggle main table panel visibility"),
+        ]),
+        Line::from(vec![
+            Span::styled("  n         ", Style::new().fg(Color::Green)),
+            Span::raw("Switch main panel between indices and nodes"),
+        ]),
+        Line::from(vec![
+            Span::styled("  .         ", Style::new().fg(Color::Green)),
+            Span::raw("Toggle system indices (dot-prefixed, not .ds-*)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  +/-       ", Style::new().fg(Color::Green)),
+            Span::raw("Increase/decrease refresh interval"),
+        ]),
+        Line::from(vec![
+            Span::styled("  c/C       ", Style::new().fg(Color::Green)),
+            Span::raw("Cycle colormap forward/backward"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  q/Esc     ", Style::new().fg(Color::Green)),
+            Span::raw("Quit / Close popup"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+c    ", Style::new().fg(Color::Green)),
+            Span::raw("Quit, from anywhere"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Snapshots", theme::TITLE)),
+        Line::from(""),
+        Line::from("  Press s to freeze every metric in both panels at this moment. Each"),
+        Line::from("  later refresh is compared against that frozen baseline — not against"),
+        Line::from("  the previous tick — and any metric that has moved gets an arrow:"),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("↑", theme::TREND_UP),
+            Span::raw("  higher than the snapshot     "),
+            Span::styled("↓", theme::TREND_DOWN),
+            Span::raw("  lower than the snapshot"),
+        ]),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("⟲", theme::TREND_RESET),
+            Span::raw("  counter restarted (see below)"),
+        ]),
+        Line::from("  A metric with no arrow is exactly where it was — including one that"),
+        Line::from("  moved and came back, since the comparison is against the snapshot"),
+        Line::from("  rather than against the previous refresh. Pressing s again"),
+        Line::from("  re-baselines from now; S drops the baseline and the arrows with it."),
+        Line::from(""),
+        Line::from("  IdxFailed and BrkTripd are cumulative counters that only reset when"),
+        Line::from("  the node does, so they never show a down arrow — a fall there means"),
+        Line::from("  the node restarted, which is shown as ⟲ and re-baselined so that"),
+        Line::from("  failures after the restart are visible straight away. Every other"),
+        Line::from("  metric, doc counts and sizes included, moves both ways for real."),
+        Line::from("  Rows that appear after the snapshot take their first reading as their"),
+        Line::from("  baseline, so they start unmarked — including nodes, which aren't"),
+        Line::from("  fetched at all until the nodes panel has been on screen."),
+        Line::from(""),
+        Line::from(Span::styled("Filter Syntax", theme::TITLE)),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Regex mode (default, via /)",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  Type a plain regex — it's matched against the index or node name."),
+        Line::from(vec![
+            Span::styled("  idx-1                ", Style::new().fg(Color::Cyan)),
+            Span::raw("Name contains 'idx-1'"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ^\\.                  ", Style::new().fg(Color::Cyan)),
+            Span::raw("Name starts with '.'"),
+        ]),
+        Line::from(vec![
+            Span::styled("  idx-[0-9]+           ", Style::new().fg(Color::Cyan)),
+            Span::raw("Name matches pattern"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  jq mode (via //)",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  Type a jq boolean expression — it's wrapped in select(...) for you."),
+        Line::from(vec![
+            Span::styled("  Fields:   ", Style::new().fg(Color::Yellow)),
+            Span::raw(".name, .doc_count, .rate_per_sec, .health, .size_bytes"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  .name == \"idx-1\"         ",
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw("Exact name match"),
+        ]),
+        Line::from(vec![
+            Span::styled("  .doc_count > 1000        ", Style::new().fg(Color::Cyan)),
+            Span::raw("Docs > 1000"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  .health != \"green\"       ",
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw("Problematic health"),
+        ]),
+        Line::from(vec![
+            Span::styled("  .rate_per_sec > 5        ", Style::new().fg(Color::Cyan)),
+            Span::raw("High rate"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  .name | contains(\"test\") ",
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw("Name contains 'test'"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  .health | match(\"red\")   ",
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw("Match health 'red'"),
+        ]),
+        Line::from(""),
+        Line::from("  Combine with: and, or, not (e.g., .doc_count > 1 and .health == \"red\")"),
+    ]
 }

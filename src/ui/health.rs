@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 use super::theme;
@@ -42,6 +42,18 @@ impl<'a> Widget for ClusterHealthWidget<'a> {
         block.render(area, buf);
 
         if inner_area.height == 0 || inner_area.width == 0 {
+            return;
+        }
+
+        // Every response carries a status, so an empty one means nothing has
+        // arrived yet. Showing the zeroed defaults instead would read as a
+        // cluster with no nodes and a red 0% of shards active.
+        if health.status.is_empty() {
+            Paragraph::new(Span::styled(
+                "waiting for _cluster/health…",
+                Style::new().fg(Color::DarkGray),
+            ))
+            .render(inner_area, buf);
             return;
         }
 
