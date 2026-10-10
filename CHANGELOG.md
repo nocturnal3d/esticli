@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
 ### Fixed
 - Elasticsearch 7.x (and 8.0) clusters work again. `_stats` only reports a per-index `health` from 8.1, and one entry without it failed the whole response, so every refresh errored with ``missing field `health` ``. Health now shows `-` where the cluster doesn't report it. Entries whose primaries didn't answer, and nodes reporting CPU as `-1` (unavailable), no longer fail the whole response either.
 - Typing any non-ASCII character in the filter box (`é`, `日`, an emoji) no longer crashes the app. The caret position counts characters, and it was being used as a byte offset.
