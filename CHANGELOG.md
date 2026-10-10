@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-11
+
+### Changed
+- An active filter no longer slows down every frame and every keypress. The result of filtering is now kept until something it depends on changes — a refresh tick, an edit to the filter, an exclusion, the system-index toggle, switching panels — instead of being recomputed over every index about twenty times a second and again on each cursor movement. On a 50,000-index cluster, a jq filter dropped from ~35ms per frame and per keypress to ~0.27ms per frame and ~14µs per keypress, and a regex filter from ~15ms to ~0.17ms. Previously a jq filter kept most of a CPU core busy while the app sat idle, and arrow keys lagged by ~70ms. The filter still runs once per refresh tick, since the data has changed by then.
+  - Moving the cursor within the filter box doesn't count as a change, so it stays instant however expensive the filter is.
+- Frames without a filter are about twice as fast at that scale (~0.39ms → ~0.21ms), mostly because formatting the numbers in each row no longer rebuilds the formatter's tables on every call.
+- Each refresh tick does less on the main thread when no index was deleted since the last one (~7.2ms → ~5.5ms at 50,000 indices), and reconciling an active snapshot baseline costs ~0.6ms instead of ~2.1ms.
+- The details popup no longer lays out its content twice per frame. For an index with 1000 shard copies a frame took ~2.2ms with the popup open, and now takes ~1.3ms.
+
+### Added
+- The performance harness also measures a whole frame, the refresh tick, the rate graph, each filter mode, and the details popup at large shard counts.
+
 ## [0.6.0] - 2026-10-10
 
 ### Fixed
