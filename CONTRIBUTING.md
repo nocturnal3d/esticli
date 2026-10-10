@@ -33,6 +33,22 @@ cargo install cargo-watch
 cargo watch -x run
 ```
 
+### A local cluster to test against
+
+`docker/` has Compose profiles for a single node, a three-node cluster, a
+TLS cluster with auth, ES 7.17, and a path-prefix proxy with fault injection,
+plus scripts that seed realistic data, generate load and create thousands of
+indices:
+
+```bash
+docker/esenv.sh up single && docker/esenv.sh seed single
+docker/esenv.sh load single --churn &
+cargo run -- -u http://localhost:9200
+```
+
+See [docker/README.md](docker/README.md) for every profile and the
+performance recipes.
+
 ## Code Style
 
 - Follow Rust conventions and idioms

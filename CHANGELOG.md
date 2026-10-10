@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Elasticsearch 7.x (and 8.0) clusters work again. `_stats` only reports a per-index `health` from 8.1, and one entry without it failed the whole response, so every refresh errored with ``missing field `health` ``. Health now shows `-` where the cluster doesn't report it. Entries whose primaries didn't answer, and nodes reporting CPU as `-1` (unavailable), no longer fail the whole response either.
+- Typing any non-ASCII character in the filter box (`é`, `日`, an emoji) no longer crashes the app. The caret position counts characters, and it was being used as a byte offset.
+- Data stream backing indices (`.ds-<stream>-…`) are no longer hidden as system indices. On clusters fed by Elastic Agent, Logstash or OpenTelemetry they hold most of the ingestion, so the header's Cluster Rate and the graph were reporting a fraction of real traffic by default. Dot-prefixed indices that really are internal are still hidden until `.`.
+- A base URL with a path prefix (`-u https://gateway/elasticsearch`) is honoured; previously the prefix was silently dropped from every request. Index names containing `%`, `&`, `#` or non-ASCII characters are now percent-encoded in request paths, so their details popup loads.
+- The details popup shows the ILM phase. The request went to the wrong endpoint and the response field was misnamed, and both failures were silently swallowed.
+- A filter typed on the nodes panel no longer also filters the indices, which zeroed the header rate and drew zeros into the graph while it was active.
+- `Enter` and `x` do nothing on the nodes panel, instead of opening details for, or excluding, an index selected off screen.
+- A failing `_cluster/health` or `_nodes/stats` request (a role without the cluster `monitor` privilege, one unresponsive node) no longer discards the `_stats` reading that arrived alongside it. The table, header rate and graph keep updating, and the header names the part that failed.
+- Indexing rates are no longer under-reported for the first `--rate-samples` refreshes after startup and after every rollover. Each index's first reading has nothing to diff against, and it had been averaged in as a rate of 0.
+- Rows with equal values (every idle index, under the default rate sort) keep a stable name order instead of reshuffling on every refresh. Sorting by Health orders by severity, so red can be brought to the top.
+- `Ctrl+C` quits from anywhere. Modified keys no longer trigger the bare key's binding: `Ctrl+C` used to cycle the colormap, `Ctrl+S` re-took the snapshot, `Alt+Q` quit.
+- `Ctrl+U` clears the filter but keeps you in the filter box, instead of turning your next keystrokes (`q`…) into commands. Pasting into the filter box inserts the text rather than replaying it as keystrokes.
+- An invalid filter now says why next to the input. A long filter scrolls to keep the caret in view instead of being cut off behind the status.
+- jq filters that only make sense on the nodes panel (`.heap_used_percent * 2 > 100`) are accepted. jq's `halt` and `halt_error` no longer exit the app with the terminal left in raw mode, and `stderr` no longer writes over the screen.
+- Taking a snapshot away from the nodes panel no longer freezes stale node readings as the baseline. A node that drops out for a tick while restarting keeps its baseline, so the restart shows as `⟲`. A smoothed rate whose displayed value hasn't changed no longer carries an arrow.
+- The details popup is no longer held up behind a slow polling request, and a result for a previously opened index can't land in a newly opened popup. Its content can be scrolled to the end when lines wrap, and scrolling past the end of either popup no longer banks dead keypresses.
+- The cluster graph scales to the samples it's drawing, rather than to a peak that has scrolled off screen, and it graphs sub-1/s ingestion instead of truncating it to 0. The health panel shows a placeholder until the first response, instead of a red `0%`.
+- A full mount of a searchable snapshot is no longer labelled partial, and a legacy `_freeze`d index is no longer described as a searchable snapshot. Templates matching wildcards anywhere in their pattern (`logs-*-*`) are found, and a backing index shows its data stream's template.
+- Credentials embedded in the URL (`https://user:pass@host`) are no longer shown in the header. Connection errors include their cause (connection refused, certificate not trusted, timeout), and error responses are cut down to Elasticsearch's `reason` instead of a whole HTML page.
+
+### Changed
+- Each refresh asks Elasticsearch only for the fields it displays (`filter_path`), about 8x less for the cluster to build, send and parse. That matters at tens of thousands of indices, and on HTTPS clusters, where Elasticsearch doesn't compress responses by default.
+- `--help` describes every option, and `--version` exists. `ESTICLI_URL`, `ESTICLI_USERNAME`, `ESTICLI_PASSWORD`, `ESTICLI_API_KEY` and `ESTICLI_CA_CERT` can replace their arguments, which keeps secrets out of `ps`. `--username` and `--password` must be given together, and `--refresh` (1–60) and `--rate-samples` are range-checked. A URL without `http://`/`https://`, or a CA file with no certificate in it, is rejected at startup with a clear message.
+- The minimum supported Rust version is 1.88, which is what the dependencies already required; 1.70 was never buildable. CI now lints test code too (`clippy --all-targets`).
+
 ## [0.5.0] - 2026-09-10
 
 ### Added

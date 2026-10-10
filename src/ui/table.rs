@@ -132,7 +132,12 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
                     metric_cell(index.doc_count_human(), trends.doc_count),
                     metric_cell(index.rate_human(), trends.rate),
                     metric_cell(index.size_human(), trends.size),
-                    Cell::from(index.health.clone()),
+                    // Per-index health isn't in `_stats` before ES 8.1.
+                    Cell::from(if index.health.is_empty() {
+                        "-".to_string()
+                    } else {
+                        index.health.clone()
+                    }),
                 ];
 
                 Row::new(cells).style(style)
@@ -155,7 +160,10 @@ impl<'a> StatefulWidget for IndicesTable<'a> {
         // box; the spinner, fetch duration and row count are right-aligned by
         // `panel_title::status`.
         let mut title_spans = super::panel_title::tabs(self.app);
-        title_spans.extend(super::panel_title::filter_spans(self.app));
+        title_spans.extend(super::panel_title::filter_spans(
+            self.app,
+            super::panel_title::filter_width(area.width),
+        ));
 
         if self.app.paused {
             title_spans.push(Span::styled(

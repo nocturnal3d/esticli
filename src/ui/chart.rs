@@ -22,20 +22,19 @@ const EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '�
 ///
 /// A non-zero rate always returns at least one eighth: rounding a small but
 /// real rate down to nothing would render an idle cluster and a barely-active
-/// one identically.
-fn column_eighths(value: u64, max: u64, height: u16) -> usize {
-    if max == 0 || height == 0 {
+/// one identically. Anything that isn't a positive, finite number draws
+/// nothing rather than a nonsense height.
+fn column_eighths(value: f64, max: f64, height: u16) -> usize {
+    if !(max > 0.0 && max.is_finite()) || height == 0 {
+        return 0;
+    }
+    if !(value > 0.0 && value.is_finite()) {
         return 0;
     }
 
     let full_scale = height as f64 * 8.0;
-    let scaled = (value as f64 / max as f64 * full_scale).round() as usize;
-
-    if value > 0 {
-        scaled.clamp(1, full_scale as usize)
-    } else {
-        0
-    }
+    let scaled = (value / max * full_scale).round() as usize;
+    scaled.clamp(1, full_scale as usize)
 }
 
 pub struct RateChart<'a> {
@@ -50,48 +49,20 @@ impl<'a> RateChart<'a> {
 
 impl<'a> Widget for RateChart<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let max_rate = self.app.rate_history.iter().max().copied().unwrap_or(0);
-        let current_rate = self.app.rate_history.back().copied().unwrap_or(0);
-
-        let title = Line::from(vec![
-            Span::raw(" Cluster Indexing Rate "),
-            Span::styled(
-                format!("{} /s", format_number(current_rate as f64)),
-                theme::RATE,
-            ),
-            Span::raw(" "),
-        ]);
-        let scale = Line::from(vec![
-            Span::styled(
-                format!("peak {} /s", format_number(max_rate as f64)),
-                theme::TIME,
-            ),
-            Span::raw(" "),
-        ])
-        .right_aligned();
-
         let border_style = if self.app.paused {
             Style::new().fg(Color::Yellow)
         } else {
             theme::BORDER
         };
-
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(border_style)
-            .title_top(title)
-            .title_top(scale);
+            .border_style(border_style);
         let inner = block.inner(area);
-        block.render(area, buf);
-
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
 
         // One column per sample, newest at the right, so history scrolls in
         // from the right edge the way every other time-series graph does.
         let width = inner.width as usize;
-        let points: Vec<u64> = self
+        let points: Vec<f64> = self
             .app
             .rate_history
             .iter()
@@ -100,6 +71,35 @@ impl<'a> Widget for RateChart<'a> {
             .rev()
             .copied()
             .collect();
+
+        // Scaled against the samples actually drawn, not the whole retained
+        // history: on a narrow panel most of the history is off to the left,
+        // and a peak from twenty minutes ago would otherwise flatten
+        // everything on screen into the floor — while the title advertised a
+        // peak nobody can see.
+        let max_rate = points
+            .iter()
+            .copied()
+            .filter(|rate| rate.is_finite())
+            .fold(0.0, f64::max);
+        let current_rate = self.app.rate_history.back().copied().unwrap_or(0.0);
+
+        let title = Line::from(vec![
+            Span::raw(" Cluster Indexing Rate "),
+            Span::styled(format!("{} /s", format_number(current_rate)), theme::RATE),
+            Span::raw(" "),
+        ]);
+        let scale = Line::from(vec![
+            Span::styled(format!("peak {} /s", format_number(max_rate)), theme::TIME),
+            Span::raw(" "),
+        ])
+        .right_aligned();
+
+        block.title_top(title).title_top(scale).render(area, buf);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
 
         // Right-align: a partly-filled history leaves the left side blank and
         // grows rightwards rather than starting at the left edge and shifting.
@@ -156,22 +156,26 @@ mod tests {
     #[test]
     fn test_column_eighths_scales_to_full_height() {
         // The peak fills the column; half the peak fills half of it.
-        assert_eq!(column_eighths(100, 100, 4), 32);
-        assert_eq!(column_eighths(50, 100, 4), 16);
-        assert_eq!(column_eighths(0, 100, 4), 0);
+        assert_eq!(column_eighths(100.0, 100.0, 4), 32);
+        assert_eq!(column_eighths(50.0, 100.0, 4), 16);
+        assert_eq!(column_eighths(0.0, 100.0, 4), 0);
     }
 
     #[test]
     fn test_column_eighths_keeps_small_values_visible() {
         // A rate that rounds to nothing must still draw a sliver, otherwise a
         // barely-active cluster looks identical to an idle one.
-        assert_eq!(column_eighths(1, 100_000, 4), 1);
+        assert_eq!(column_eighths(1.0, 100_000.0, 4), 1);
+        // Sub-1/s rates are real ingestion too, not idle.
+        assert_eq!(column_eighths(0.2, 0.4, 4), 16);
     }
 
     #[test]
     fn test_column_eighths_handles_empty_history() {
-        assert_eq!(column_eighths(0, 0, 4), 0);
-        assert_eq!(column_eighths(5, 0, 4), 0);
-        assert_eq!(column_eighths(5, 10, 0), 0);
+        assert_eq!(column_eighths(0.0, 0.0, 4), 0);
+        assert_eq!(column_eighths(5.0, 0.0, 4), 0);
+        assert_eq!(column_eighths(5.0, 10.0, 0), 0);
+        assert_eq!(column_eighths(f64::NAN, 10.0, 4), 0);
+        assert_eq!(column_eighths(5.0, f64::INFINITY, 4), 0);
     }
 }

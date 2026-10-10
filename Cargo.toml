@@ -11,10 +11,10 @@ documentation = "https://github.com/nocturnal3d/esticli#readme"
 readme = "README.md"
 keywords = ["elasticsearch", "tui", "monitoring", "cli", "terminal"]
 categories = ["command-line-utilities", "development-tools::profiling"]
-rust-version = "1.70"
+rust-version = "1.88"
 
 [dependencies]
-ratatui = "0.30.0"
+ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29.0"
 tui-input = "0.15.0"
 human_format = "1"
@@ -25,7 +25,7 @@ reqwest = { version = "0.13", features = [
   "webpki-roots",
   "gzip",
 ], default-features = false }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

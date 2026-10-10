@@ -8,7 +8,7 @@ use std::time::Instant;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use crate::models::IndexRate;
+use crate::models::{IndexRate, NodeStats};
 
 /// How long the cursor stays solid before blinking off, and vice versa.
 /// Driven by our own clock rather than the terminal's SGR blink attribute,
@@ -17,6 +17,20 @@ const CURSOR_BLINK_MS: u128 = 530;
 
 /// Compiled filter that can be reused across multiple matches
 type CompiledFilter = Arc<jaq_core::Filter<Native<Val>>>;
+
+/// Prepended to every jq-mode program to shadow the builtins that reach
+/// outside the filter box: `halt`/`halt_error` call `std::process::exit`,
+/// killing the app with the terminal still in raw mode on the alternate
+/// screen, and `stderr` writes straight over the TUI.
+///
+/// They are shadowed by definitions rather than dropped from the native
+/// list because jaq's own standard library defines `halt_error` in terms of
+/// the native, and everything stops compiling without it. User definitions
+/// shadow both the native and that wrapper.
+const JQ_PRELUDE: &str = "def halt: error(\"halt is not available in the filter box\"); \
+def halt_error: halt; \
+def halt_error($code): halt; \
+def stderr: .; ";
 
 /// Which syntax the filter input box is currently interpreted as.
 ///
@@ -100,12 +114,33 @@ impl FilterState {
         self.active = false;
     }
 
+    /// Empties the box (Ctrl+U). Focus stays where it was: clearing while
+    /// typing leaves you in the box to type a new filter, rather than
+    /// silently turning your next keystrokes into commands (`q` quitting).
     pub fn clear(&mut self) {
         self.input.reset();
         self.mode = FilterMode::default();
         self.error = None;
         self.compiled = None;
-        self.active = false;
+    }
+
+    /// Inserts pasted text at the cursor. Line breaks become spaces: a paste
+    /// arrives as one event (bracketed paste), and must never be replayed
+    /// as keystrokes, where its newline would leave the box and the rest of
+    /// the text would run as commands.
+    pub fn paste(&mut self, text: &str) {
+        let mut changed = false;
+        for c in text.chars() {
+            let c = if c.is_control() { ' ' } else { c };
+            changed |= self
+                .input
+                .handle(tui_input::InputRequest::InsertChar(c))
+                .is_some_and(|response| response.value);
+        }
+        self.cursor_blink_anchor = Some(Instant::now());
+        if changed {
+            self.recompile();
+        }
     }
 
     /// Feeds a raw key event into the input box. Cursor-only movement
@@ -127,7 +162,7 @@ impl FilterState {
     /// True during the "on" phase of the cursor blink cycle.
     pub fn cursor_visible(&self) -> bool {
         match self.cursor_blink_anchor {
-            Some(anchor) => (anchor.elapsed().as_millis() / CURSOR_BLINK_MS) % 2 == 0,
+            Some(anchor) => (anchor.elapsed().as_millis() / CURSOR_BLINK_MS).is_multiple_of(2),
             None => true,
         }
     }
@@ -168,20 +203,23 @@ impl FilterState {
             // The user types the boolean expression only; `select(...)` is
             // implicit so they never need to know jq's select syntax.
             FilterMode::Jq => {
-                let program = format!("select({})", text);
+                let program = format!("{}select({})", JQ_PRELUDE, text);
                 match compile_filter(&program) {
                     Ok(filter) => {
                         let filter = Arc::new(filter);
                         // jq compiles a syntactically valid program even when
                         // it will always fail at runtime — e.g. a type error
-                        // in the expression. Probe it against a dummy index
-                        // now so errors surface immediately instead of only
-                        // once real data arrives.
-                        let probe = serde_json::json!({
-                            "name": "", "doc_count": 0, "rate_per_sec": 0.0,
-                            "size_bytes": 0, "health": "",
-                        });
-                        match evaluate(&filter, Val::from(probe)) {
+                        // in the expression. Probe it against a dummy row now
+                        // so errors surface immediately instead of only once
+                        // real data arrives. The same box filters either
+                        // panel, so a program only has to work on one of the
+                        // two row shapes: `.heap_used_percent * 2 > 100` is a
+                        // fine node filter even though an index has no such
+                        // field to multiply.
+                        let [index_row, node_row] = probe_rows();
+                        let probe = evaluate(&filter, Val::from(index_row))
+                            .or_else(|e| evaluate(&filter, Val::from(node_row)).map_err(|_| e));
+                        match probe {
                             Ok(_) => {
                                 self.error = None;
                                 self.compiled = Some(Compiled::Jq(filter));
@@ -224,6 +262,26 @@ impl FilterState {
     pub fn is_match(&self, index: &IndexRate) -> bool {
         self.matches(&index.name, index)
     }
+}
+
+/// One zero-valued row of each shape the filter box can be applied to, for
+/// probing a jq program before real data reaches it.
+fn probe_rows() -> [serde_json::Value; 2] {
+    let index = IndexRate {
+        name: String::new(),
+        doc_count: 0,
+        rate_per_sec: 0.0,
+        size_bytes: 0,
+        health: String::new(),
+    };
+    let node = NodeStats {
+        cpu_percent: Some(0),
+        ..NodeStats::default()
+    };
+    [
+        serde_json::to_value(index).unwrap_or_default(),
+        serde_json::to_value(node).unwrap_or_default(),
+    ]
 }
 
 /// Runs a compiled `select(...)` filter against a value: `Ok(true)` if it
@@ -351,9 +409,83 @@ mod tests {
         assert!(!filter.input.value().is_empty());
 
         filter.clear();
-        assert!(!filter.active);
+        assert!(filter.active);
         assert!(filter.input.value().is_empty());
         assert_eq!(filter.mode, FilterMode::Regex);
+    }
+
+    #[test]
+    fn test_clearing_keeps_the_box_focused() {
+        let mut filter = FilterState::default();
+        filter.enter();
+        filter.input = filter.input.clone().with_value("abc".to_string());
+        filter.recompile();
+
+        filter.clear();
+        assert!(
+            filter.active,
+            "Ctrl+U must not hand the next keys to the keymap"
+        );
+        assert!(filter.input.value().is_empty());
+        assert!(filter.is_match(&named("anything")));
+    }
+
+    #[test]
+    fn test_paste_inserts_text_without_line_breaks() {
+        let mut filter = FilterState::default();
+        filter.enter();
+        filter.paste("logs\nq");
+        assert_eq!(filter.input.value(), "logs q");
+        assert!(filter.is_match(&named("x-logs q-y")));
+    }
+
+    #[test]
+    fn test_jq_filters_for_either_panel_are_accepted() {
+        let mut filter = FilterState::default();
+        filter.toggle_mode();
+
+        // Arithmetic on a node-only field errors against an index row but is
+        // a perfectly good nodes-panel filter.
+        filter.input = filter
+            .input
+            .clone()
+            .with_value(".heap_used_percent * 2 > 100".to_string());
+        filter.recompile();
+        assert!(filter.error.is_none(), "{:?}", filter.error);
+
+        // An expression that fails on both shapes is still reported.
+        filter.input = filter.input.clone().with_value(".name - 1 > 0".to_string());
+        filter.recompile();
+        assert!(filter.error.is_some());
+    }
+
+    #[test]
+    fn test_jq_builtins_that_exit_or_write_are_neutralised() {
+        let mut filter = FilterState::default();
+        filter.toggle_mode();
+        // Reaching any of these would have exited the process (this test
+        // binary included) or written over the screen.
+        for program in [
+            "halt",
+            "halt_error",
+            "halt_error(1)",
+            "true) | halt | (true",
+        ] {
+            filter.input = filter.input.clone().with_value(program.to_string());
+            filter.recompile();
+            assert!(filter.error.is_some(), "{} should be rejected", program);
+        }
+        filter.input = filter.input.clone().with_value("stderr | true".to_string());
+        filter.recompile();
+        assert!(filter.error.is_none(), "{:?}", filter.error);
+        assert!(filter.is_match(&named("x")));
+
+        // The rest of the standard library still loads.
+        filter.input = filter.input.clone().with_value(
+            ".name | test(\"^a\") and (.doc_count | tostring | length) > 0".to_string(),
+        );
+        filter.recompile();
+        assert!(filter.error.is_none(), "{:?}", filter.error);
     }
 
     #[test]

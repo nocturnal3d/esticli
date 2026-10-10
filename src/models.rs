@@ -37,8 +37,9 @@ pub struct NodeStats {
     pub index_failed: u64,
     /// `indices.bulk.avg_size_in_bytes`
     pub bulk_avg_size_bytes: u64,
-    /// `process.cpu.percent`
-    pub cpu_percent: u64,
+    /// `process.cpu.percent`; `None` where the node reports it as
+    /// unavailable (ES sends -1).
+    pub cpu_percent: Option<u64>,
     /// `breakers.parent.tripped`
     pub breaker_parent_tripped: u64,
 }
@@ -60,11 +61,12 @@ impl NodeStats {
     }
 }
 
+/// One index's counters from one `_stats` reading.
 #[derive(Debug, Clone)]
 pub struct IndexSnapshot {
-    pub doc_count: u64,
-    pub index_total: u64,
-    pub size_bytes: u64,
+    /// `(doc_count, index_total, size_bytes)` of the primaries, or `None`
+    /// when no primary shard copy answered for this reading.
+    pub counters: Option<(u64, u64, u64)>,
     pub health: String,
 }
 
@@ -76,7 +78,12 @@ pub struct IndexDetails {
     pub creation_date: Option<String>,
     pub primary_shards: u32,
     pub replica_shards: u32,
+    /// Frozen with the legacy (7.x) `_freeze` API.
     pub is_frozen: bool,
+    /// Mounted from a snapshot (`index.store.type: snapshot`), fully or
+    /// partially.
+    pub is_searchable_snapshot: bool,
+    /// A partially mounted (frozen tier) searchable snapshot.
     pub is_partial: bool,
     pub ilm_policy: Option<String>,
     pub ilm_phase: Option<String>,

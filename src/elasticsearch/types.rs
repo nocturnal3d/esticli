@@ -1,37 +1,53 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-// Elasticsearch _stats API response types
+// Elasticsearch _stats API response types.
+//
+// Everything is defaulted: one odd entry must not fail the whole response,
+// which on a large cluster is every index at once. `indices` itself is absent
+// when `filter_path` matches nothing (a cluster with no indices).
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct StatsResponse {
+    #[serde(default)]
     pub indices: HashMap<String, IndexStatsEntry>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct IndexStatsEntry {
-    pub primaries: PrimaryStats,
-    pub health: String,
+    /// Missing (or `{}`, which `filter_path` drops entirely) when no primary
+    /// shard copy answered the stats request this time.
+    #[serde(default)]
+    pub primaries: Option<PrimaryStats>,
+    /// Only reported per index from ES 8.1; absent on 7.x and OpenSearch.
+    #[serde(default)]
+    pub health: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct PrimaryStats {
+    #[serde(default)]
     pub docs: DocsStats,
+    #[serde(default)]
     pub indexing: IndexingStats,
+    #[serde(default)]
     pub store: StoreStats,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct DocsStats {
+    #[serde(default)]
     pub count: u64,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct IndexingStats {
+    #[serde(default)]
     pub index_total: u64,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct StoreStats {
+    #[serde(default)]
     pub size_in_bytes: u64,
 }
 
@@ -77,6 +93,17 @@ pub struct IndexLifecycleSettings {
 pub struct IndexStoreSettings {
     #[serde(rename = "type")]
     pub store_type: Option<String>,
+    #[serde(default)]
+    pub snapshot: Option<IndexStoreSnapshotSettings>,
+}
+
+/// `index.store.snapshot.*`, present on searchable-snapshot mounts. Only a
+/// partial (frozen-tier) mount sets `partial`; a full (cold-tier) mount has
+/// the same `snapshot` store type without it.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct IndexStoreSnapshotSettings {
+    #[serde(default)]
+    pub partial: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -86,7 +113,6 @@ pub struct IlmExplainResponse {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct IlmIndexStatus {
-    pub _managed: bool,
     pub policy: Option<String>,
     pub phase: Option<String>,
 }
@@ -125,6 +151,7 @@ pub struct CatShardEntry {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct IndexTemplateResponse {
+    #[serde(default)]
     pub index_templates: Vec<IndexTemplateEntry>,
 }
 
@@ -136,7 +163,12 @@ pub struct IndexTemplateEntry {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct IndexTemplateDetails {
+    #[serde(default)]
     pub index_patterns: Vec<String>,
+    /// When several templates match, Elasticsearch applies only the one with
+    /// the highest priority.
+    #[serde(default)]
+    pub priority: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -149,13 +181,16 @@ pub struct CatIndexEntry {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct DataStreamsResponse {
+    #[serde(default)]
     pub data_streams: Vec<DataStreamInfo>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct DataStreamInfo {
     pub name: String,
+    #[serde(default)]
     pub timestamp_field: DataStreamTimestampField,
+    #[serde(default)]
     pub indices: Vec<DataStreamIndex>,
     #[serde(default)]
     pub generation: u64,
@@ -175,7 +210,7 @@ pub struct DataStreamTimestampField {
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct DataStreamIndex {
     pub index_name: String,
-    #[serde(rename = "index_uuid")]
+    #[serde(rename = "index_uuid", default)]
     pub _index_uuid: String,
 }
 
@@ -267,8 +302,10 @@ pub struct NodeProcessStats {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct NodeProcessCpuStats {
+    /// Signed because ES reports -1 when the JVM can't measure process CPU
+    /// load; reading it as unsigned would fail the whole response.
     #[serde(default)]
-    pub percent: u64,
+    pub percent: i64,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -322,6 +359,71 @@ mod tests {
         assert_eq!(node.indices.bulk.avg_size_in_bytes, 2048);
         assert_eq!(node.process.cpu.percent, 41);
         assert_eq!(node.breakers.parent.tripped, 3);
+    }
+
+    #[test]
+    fn test_deserialize_stats_from_7x_without_health() {
+        // ES 7.x (and 8.0) don't report per-index health in `_stats`; one
+        // entry like this used to fail the whole response.
+        let json_data = json!({
+            "indices": {
+                "logs": {
+                    "uuid": "x",
+                    "primaries": {
+                        "docs": {"count": 5},
+                        "indexing": {"index_total": 7},
+                        "store": {"size_in_bytes": 9}
+                    }
+                },
+                // No primary answered for this one.
+                "degraded": {"health": "red"}
+            }
+        });
+
+        let response: StatsResponse = serde_json::from_value(json_data).unwrap();
+        let logs = &response.indices["logs"];
+        assert_eq!(logs.health, None);
+        assert_eq!(logs.primaries.as_ref().unwrap().indexing.index_total, 7);
+        assert!(response.indices["degraded"].primaries.is_none());
+
+        // `filter_path` drops `indices` entirely on a cluster with none.
+        let empty: StatsResponse = serde_json::from_value(json!({})).unwrap();
+        assert!(empty.indices.is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_ilm_explain() {
+        // Shaped like a real `<index>/_ilm/explain` response: the field is
+        // `managed`, and unmanaged indices carry no policy or phase.
+        let json_data = json!({
+            "indices": {
+                "logs-000001": {
+                    "index": "logs-000001",
+                    "managed": true,
+                    "policy": "rollover",
+                    "phase": "hot",
+                    "action": "rollover"
+                },
+                "plain": {"index": "plain", "managed": false}
+            }
+        });
+
+        let response: IlmExplainResponse = serde_json::from_value(json_data).unwrap();
+        assert_eq!(
+            response.indices["logs-000001"].phase.as_deref(),
+            Some("hot")
+        );
+        assert_eq!(response.indices["plain"].policy, None);
+    }
+
+    #[test]
+    fn test_deserialize_nodes_stats_with_unavailable_cpu() {
+        // ES reports -1 when the JVM can't measure process CPU.
+        let json_data = json!({
+            "nodes": {"abc": {"name": "n", "process": {"cpu": {"percent": -1}}}}
+        });
+        let response: NodesStatsResponse = serde_json::from_value(json_data).unwrap();
+        assert_eq!(response.nodes["abc"].process.cpu.percent, -1);
     }
 
     #[test]

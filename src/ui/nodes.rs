@@ -40,7 +40,7 @@ impl<'a> NodesTable<'a> {
             NodeSortColumn::Heap => Some(node.heap_used_percent as f64),
             NodeSortColumn::IndexFailed => Some(node.index_failed as f64),
             NodeSortColumn::BulkAvgSize => Some(node.bulk_avg_size_bytes as f64),
-            NodeSortColumn::Cpu => Some(node.cpu_percent as f64),
+            NodeSortColumn::Cpu => node.cpu_percent.map(|cpu| cpu as f64),
             NodeSortColumn::BreakerTripped => Some(node.breaker_parent_tripped as f64),
         }
     }
@@ -111,7 +111,11 @@ impl<'a> StatefulWidget for NodesTable<'a> {
 
                 let cells = [
                     Cell::from(node.name.clone()),
-                    metric_cell(format!("{}%", node.cpu_percent), trends.cpu),
+                    metric_cell(
+                        node.cpu_percent
+                            .map_or_else(|| "-".to_string(), |cpu| format!("{}%", cpu)),
+                        trends.cpu,
+                    ),
                     metric_cell(format!("{}%", node.heap_used_percent), trends.heap),
                     metric_cell(node.index_failed_human(), trends.index_failed),
                     metric_cell(node.bulk_avg_size_human(), trends.bulk_avg_size),
@@ -139,7 +143,10 @@ impl<'a> StatefulWidget for NodesTable<'a> {
         // Same tab strip, filter box and right-aligned status as the indices
         // table — the filter drives whichever panel is on screen.
         let mut title_spans = super::panel_title::tabs(self.app);
-        title_spans.extend(super::panel_title::filter_spans(self.app));
+        title_spans.extend(super::panel_title::filter_spans(
+            self.app,
+            super::panel_title::filter_width(area.width),
+        ));
 
         if self.app.paused {
             title_spans.push(Span::styled(
@@ -184,6 +191,7 @@ impl<'a> StatefulWidget for NodesTable<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::MainPanel;
     use crate::elasticsearch::AuthConfig;
     use crate::ui::types::Colormap;
     use ratatui::buffer::Buffer;
@@ -198,7 +206,7 @@ mod tests {
     fn node(name: &str, cpu_percent: u64, index_failed: u64) -> NodeStats {
         NodeStats {
             name: name.to_string(),
-            cpu_percent,
+            cpu_percent: Some(cpu_percent),
             index_failed,
             ..NodeStats::default()
         }
@@ -236,6 +244,7 @@ mod tests {
     #[test]
     fn test_a_restarted_counter_draws_a_reset_marker_not_a_down_arrow() {
         let mut app = app();
+        app.main_panel = MainPanel::Nodes;
         app.nodes = vec![node("node-a", 50, 500)];
         app.take_snapshot();
 

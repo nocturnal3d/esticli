@@ -18,3 +18,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Local Elasticsearch test environment (docker/)
+docker/certs/
+docker/.env
+__pycache__/
