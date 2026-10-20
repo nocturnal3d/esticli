@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-20
+
+### Changed
+- Every index whose name starts with a dot is hidden until `.` is pressed, data stream backing indices (`.ds-…`) and failure-store indices (`.fs-…`) included. 0.6.0 had started showing those by default. On a cluster fed through data streams, the table, header rate and graph cover only regular indices until system indices are shown.
+
 ## [0.6.2] - 2026-10-20
 
 ### Fixed
