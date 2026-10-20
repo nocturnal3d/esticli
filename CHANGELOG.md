@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-20
+
+### Fixed
+- The footer named regex as the filter mode even while typing a jq expression. It now says which mode the box is in.
+- The details popup counted shards as "1 primary, 1 replicas" and "3 primary". It now reads "1 primary, 1 replica", or "3 primaries, 1 replica each" when there is more than one primary, since the replica count is per primary.
+
+### Changed
+- The README shows an animated demo instead of a screenshot.
+
 ## [0.6.1] - 2026-10-11
 
 ### Changed

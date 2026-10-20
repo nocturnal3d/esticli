@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::theme;
+use crate::app::filter::FilterMode;
 use crate::app::{App, MainPanel};
 
 pub struct Footer<'a> {
@@ -35,7 +36,14 @@ impl<'a> Widget for Footer<'a> {
         if self.app.filter.active {
             spans.push(Span::raw("  |  "));
             spans.push(Span::styled(
-                "Filter mode: type regex, [Esc] to exit, [Ctrl+u] to clear",
+                match self.app.filter.mode {
+                    FilterMode::Regex => {
+                        "Filter mode: type regex, [Esc] to exit, [Ctrl+u] to clear"
+                    }
+                    FilterMode::Jq => {
+                        "Filter mode: type jq expression, [Esc] to exit, [Ctrl+u] to clear"
+                    }
+                },
                 Style::new().fg(Color::Cyan),
             ));
         } else {
@@ -130,5 +138,50 @@ impl<'a> Widget for Footer<'a> {
                     .border_style(theme::BORDER),
             )
             .render(area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elasticsearch::AuthConfig;
+    use crate::ui::types::Colormap;
+
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 3,
+    };
+
+    fn app() -> App {
+        App::new(
+            "http://localhost:9200".to_string(),
+            AuthConfig::None,
+            false,
+            None,
+            5,
+            Colormap::default(),
+            10,
+        )
+        .unwrap()
+    }
+
+    fn rendered(app: &App) -> String {
+        let mut buf = Buffer::empty(AREA);
+        Footer::new(app, 0, 0).render(AREA, &mut buf);
+        (0..AREA.width).map(|x| buf[(x, 1)].symbol()).collect()
+    }
+
+    #[test]
+    fn test_filter_hint_names_the_mode_being_typed() {
+        let mut app = app();
+        app.filter.enter();
+        assert!(rendered(&app).contains("type regex"));
+
+        app.filter.toggle_mode();
+        let text = rendered(&app);
+        assert!(text.contains("type jq expression"), "{}", text);
+        assert!(!text.contains("regex"), "{}", text);
     }
 }
