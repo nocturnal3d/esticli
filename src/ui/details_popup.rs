@@ -208,10 +208,7 @@ fn content(app: &App) -> Vec<Line<'_>> {
         lines.push(Line::from(""));
 
         // Shards
-        let shard_info = format!(
-            "{} primary, {} replicas",
-            details.primary_shards, details.replica_shards
-        );
+        let shard_info = shard_summary(details.primary_shards, details.replica_shards);
 
         lines.push(Line::from(vec![
             Span::styled("Shards: ", Style::new().fg(Color::DarkGray)),
@@ -449,4 +446,35 @@ fn content(app: &App) -> Vec<Line<'_>> {
     }
 
     lines
+}
+
+/// "1 primary, 1 replica", "3 primaries, 2 replicas each". The replica count
+/// is `index.number_of_replicas`, which is per primary.
+fn shard_summary(primaries: u32, replicas: u32) -> String {
+    let primary_noun = if primaries == 1 {
+        "primary"
+    } else {
+        "primaries"
+    };
+    let replica_noun = if replicas == 1 { "replica" } else { "replicas" };
+    let each = if primaries > 1 && replicas > 0 {
+        " each"
+    } else {
+        ""
+    };
+    format!("{primaries} {primary_noun}, {replicas} {replica_noun}{each}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shard_summary;
+
+    #[test]
+    fn test_shard_summary_counts_read_as_english() {
+        assert_eq!(shard_summary(1, 1), "1 primary, 1 replica");
+        assert_eq!(shard_summary(1, 0), "1 primary, 0 replicas");
+        assert_eq!(shard_summary(1, 2), "1 primary, 2 replicas");
+        assert_eq!(shard_summary(3, 1), "3 primaries, 1 replica each");
+        assert_eq!(shard_summary(3, 0), "3 primaries, 0 replicas");
+    }
 }
