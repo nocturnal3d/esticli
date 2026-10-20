@@ -159,7 +159,7 @@ Command-line arguments are visible to every user on the machine (`ps`), so prefe
 | `2`         | Toggle health visibility             |
 | `3`         | Toggle main table panel visibility   |
 | `n`         | Switch panel between indices/nodes   |
-| `.`         | Toggle system indices (dot-prefixed; data stream `.ds-*` indices always show) |
+| `.`         | Toggle system indices (every dot-prefixed index, data stream `.ds-*` included) |
 | `+` / `-`   | Increase/decrease refresh interval   |
 | `c` / `C`   | Cycle colormap forward/backward      |
 
