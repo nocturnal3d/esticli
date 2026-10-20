@@ -11,7 +11,7 @@
 
 A `top`-like TUI for real-time monitoring of Elasticsearch index ingestion rates.
 
-![EstiCLI demo](./assets/screenshot.png)
+![EstiCLI demo](./assets/demo.gif)
 
 ## Features
 
