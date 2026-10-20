@@ -210,7 +210,7 @@ fn help_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  .         ", Style::new().fg(Color::Green)),
-            Span::raw("Toggle system indices (dot-prefixed, not .ds-*)"),
+            Span::raw("Toggle system indices (dot-prefixed, .ds-* too)"),
         ]),
         Line::from(vec![
             Span::styled("  +/-       ", Style::new().fg(Color::Green)),

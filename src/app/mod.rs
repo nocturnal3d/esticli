@@ -1073,20 +1073,12 @@ impl App {
 }
 
 /// Whether an index is hidden by default as a system index (toggled with
-/// `.`).
-///
-/// Dot-prefixed names are Elasticsearch's convention for internal indices —
-/// except data stream backing indices (`.ds-<stream>-…`) and failure-store
-/// indices (`.fs-<stream>-…`), which hold whatever was written to the data
-/// stream. On a cluster fed by Elastic Agent, Logstash or OpenTelemetry those
-/// are where nearly all ingestion lands, so hiding them would leave the
-/// header rate and graph reporting a fraction of the real traffic. They count
-/// as system only when the stream itself is (`.ds-.logs-deprecation…`).
+/// `.`): every dot-prefixed name, Elasticsearch's convention for indices
+/// nobody created by hand. That includes data stream backing indices
+/// (`.ds-<stream>-…`) and failure-store indices (`.fs-<stream>-…`), so on a
+/// cluster fed through data streams the header rate and graph, which follow
+/// the visible set, leave that ingestion out until `.` is pressed.
 fn is_system_index(name: &str) -> bool {
-    let name = name
-        .strip_prefix(".ds-")
-        .or_else(|| name.strip_prefix(".fs-"))
-        .unwrap_or(name);
     name.starts_with('.')
 }
 
@@ -1488,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn test_data_stream_backing_indices_are_not_system_indices() {
+    fn test_every_dot_prefixed_index_waits_for_the_toggle() {
         let mut app = setup_mock_app();
         let with_rate = |name: &str, rate_per_sec: f64| IndexRate {
             name: name.to_string(),
@@ -1507,9 +1499,15 @@ mod tests {
         ));
         app.indices.push(with_rate(".kibana_1", 100_000.0));
 
-        // User data streams count towards the cluster rate by default; the
-        // internal ones (and a dot-named stream) stay behind the `.` toggle.
-        assert_eq!(app.total_cluster_rate(), 6.0 + 100.0 + 1000.0);
+        // Data stream backing indices are dot-prefixed too, so they stay
+        // behind the `.` toggle with the rest.
+        assert_eq!(app.total_cluster_rate(), 6.0);
+
+        app.show_system_indices = true;
+        assert_eq!(
+            app.total_cluster_rate(),
+            6.0 + 100.0 + 1000.0 + 10_000.0 + 100_000.0
+        );
     }
 
     #[test]
